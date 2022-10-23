@@ -1,0 +1,175 @@
+{
+  "main": {
+    "id": "f723bdeb50abcc26",
+    "type": "split",
+    "children": [
+      {
+        "id": "28988e348a14224f",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "9fa6c67f67b29ddd",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Literature to read.md",
+                "mode": "source",
+                "source": false
+              }
+            }
+          },
+          {
+            "id": "334025536e69766b",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Docs/Loader.md",
+                "mode": "source",
+                "source": false
+              }
+            }
+          },
+          {
+            "id": "4dae5f9e33ac6c0b",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Thoughts.md",
+                "mode": "source",
+                "source": false
+              }
+            }
+          }
+        ],
+        "currentTab": 2
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "86ca333e1ab1dec0",
+    "type": "split",
+    "children": [
+      {
+        "id": "326425d709eaec6d",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "cbd52d2e936c8aef",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical"
+              }
+            }
+          },
+          {
+            "id": "e3da79d518f3af7b",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              }
+            }
+          },
+          {
+            "id": "083c278b9030e56c",
+            "type": "leaf",
+            "state": {
+              "type": "starred",
+              "state": {}
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "55691dbfc5215892",
+    "type": "split",
+    "children": [
+      {
+        "id": "e8fc0c345d959f76",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "f9d5511061b7d6ae",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "Thoughts.md",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              }
+            }
+          },
+          {
+            "id": "ff19c47576b8f99e",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "Thoughts.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              }
+            }
+          },
+          {
+            "id": "891a9e5e0c0e00c7",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true
+              }
+            }
+          },
+          {
+            "id": "d735655d4356d7bd",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "Thoughts.md"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "ribbon": {
+    "mostRecentAction": ""
+  },
+  "active": "4dae5f9e33ac6c0b",
+  "lastOpenFiles": [
+    "Docs/Loader.md",
+    "Thoughts.md",
+    "Literature to read.md",
+    "Open3D.md",
+    "Questions.md"
+  ]
+}
