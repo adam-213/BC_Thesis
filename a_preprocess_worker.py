@@ -64,7 +64,8 @@ class Preprocessor:
                 "part_transforms": scene_path + "_part_transforms.txt",
                 "positions": scene_path + "_positions.exr",
                 "intensities": scene_path + "_intensities.exr",
-                "colors": scene_path + "_colors.exr"
+                "colors": scene_path + "_colors.exr",
+                "normals": scene_path + "_normals.exr"
             }
         return path
 
@@ -94,34 +95,44 @@ class Preprocessor:
         part_transforms = load_part_transforms(relative_path["part_transforms"])
         positions = load_exr_positons(relative_path["positions"])
         intensities = load_exr_intensities(relative_path["intensities"])
-        brg = load_exr_colors(relative_path["colors"])
+        rgb = load_exr_colors(relative_path["colors"])
+        normals = load_exr_normals(relative_path["normals"])
 
-        return [bin_transform, labels, labels_info, part_transforms, positions, intensities, brg]
-
-    def merge(self, scan):
-        brg = scan[6]
-        positions = scan[4]
-        merged = merge2RGBD(brg, positions)
-        return merged
+        return [bin_transform, labels, labels_info, part_transforms, positions, intensities, rgb, normals]
 
     def process(self, scan_path, i):
         """Process single scan"""
         scan = self.scan_load(scan_path)
-        rgbd = self.merge(scan)
+
+        # create dict of all the wanted data
+        inputs = {}
+        inputs['rgb'] = RGB_EXR2FP16(scan[6])
+        inputs['depth'] = D2FP16(scan[4])
+        inputs['normals'] = N2FP16(scan[7])
+        inputs['intensities'] = I2FP16(scan[5])
+
+        # get shapes for the coco json
+        try:
+            shapes = inputs['rgb'].shape[1:]
+        except UnboundLocalError:
+            shapes = inputs['depth'].shape
+
+        # create the image part of the json - for this specific scan
+        # will need to be merged with the rest of the json
+        image = create_image_json(shapes, i)
+
+        # save the image array to a npz file with the correct name
+        save_NPZ(inputs, self.save_path, i)
+
         tm = scan[3]
         labels = scan[1]
         labels_info = scan[2]
-        # create the image part of the json - for this specific scan
-        # will need to be merged with the rest of the json
-        image = create_image_json(rgbd, i)
+
         # create the annotations part of the json - for this specific scan
         annotations = create_annotations_json(labels, labels_info, tm, i, scan[0], self.categories)
 
         # json understands about 4 dtypes, so we need to convert the numpy dtypes to python dtypes
         result = prepare_data(image, annotations)
-
-        # save the rgbd image with the corect name
-        save_rgbd(rgbd, self.save_path, i)
 
         return result
 
@@ -158,5 +169,5 @@ class Preprocessor:
 if __name__ == '__main__':
     preprocessor = Preprocessor()
     preprocessor.load_scan_paths()
-    preprocessor.worker(use_mp=False)
+    preprocessor.worker(use_mp=True)
     print('Done')

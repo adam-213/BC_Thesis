@@ -88,6 +88,9 @@ def load_exr_intensities(path):
 
 def load_exr_colors(path):
     img = cv.imread(str(path), cv.IMREAD_ANYCOLOR | cv.IMREAD_ANYDEPTH)
-    # convert to 0-255 range
-    img = img * 255
+    return img
+
+
+def load_exr_normals(path):
+    img = cv.imread(str(path), cv.IMREAD_ANYCOLOR | cv.IMREAD_ANYDEPTH)
     return img

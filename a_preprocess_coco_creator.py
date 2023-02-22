@@ -3,12 +3,12 @@ import numpy as np
 import pycocotools.mask as mask_util
 
 
-def create_image_json(rgbd, image_id):
+def create_image_json(shape, image_id):
     image = {}
     image["id"] = image_id
-    image["width"] = rgbd.shape[1]
-    image["height"] = rgbd.shape[0]
-    image["file_name"] = "train" + "/" + str(image_id) + ".png"
+    image["width"] = shape[1]
+    image["height"] = shape[0]
+    image["file_name"] = "train" + "/" + str(image_id) + ".npz"
     image["license"] = 1
     return image
 

@@ -15,10 +15,11 @@ from torchvision.datasets import CocoDetection
 class CustomCocoDetection(CocoDetection):
     # overrride the _load_image method
     # change this when trying to load say npz files with many channels as input
-    # TODO: consider using normals, full positions etc. as input
+    # rgba png
     def _load_image(self, id: int) -> Image.Image:
         path = self.coco.loadImgs(id)[0]["file_name"]
         return Image.open(os.path.join(self.root, path)).convert("RGBA")
+
 
 
 def collate_fn(batch):
@@ -108,10 +109,8 @@ def collate_fn2(batch):
     # todo delete this
     image_tensor = image_tensor[:, [0, 1, 3], :, :]
 
-
-
     # stack 2 of the image_tensors on the channel dimension
-    #image_tensor = torch.cat([image_tensor, image_tensor], dim=1)
+    # image_tensor = torch.cat([image_tensor, image_tensor], dim=1)
     # removing the either blue or red channel depending on the Rgb vs bgr
 
     # Prepare targets
@@ -141,23 +140,19 @@ def collate_fn2(batch):
 
         # convert everything to float16
         inst_masks = inst_masks.type(torch.bool)
-        #mask_shapes = mask_shapes.type(torch.float16)
+        # mask_shapes = mask_shapes.type(torch.float16)
         inst_transforms = inst_transforms.type(torch.float16)
         bbox = bbox.type(torch.float16)
 
-
-
-
         # Set fields in prepared target dictionary
         prepared_target['masks'] = inst_masks
-        #prepared_target['mask_shapes'] = mask_shapes
+        # prepared_target['mask_shapes'] = mask_shapes
         prepared_target['boxes'] = bbox
         prepared_target['labels'] = torch.ones((bbox.shape[0],), dtype=torch.int64)  # COCO only has 1 class
         prepared_target['image_id'] = torch.tensor([target[0]['image_id']])
         prepared_target['area'] = (bbox[:, 3] - bbox[:, 1]) * (bbox[:, 2] - bbox[:, 0])
 
         prepared_targets.append(prepared_target)
-
 
     # print("Mask shapes: ", inst_masks.shape)
     # print("Image shape: ", image_tensor.shape)
