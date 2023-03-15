@@ -1,11 +1,9 @@
-from b_DataLoader_RCNN import createDataLoader
-from c_FPN50 import gen_fcn_fpn50
-
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import torchvision
 from tqdm import tqdm
+
+from b_DataLoader_RCNN import createDataLoader
+from c_FPN50 import gen_fcn_fpn50
 
 
 class MaskLoss(nn.Module):

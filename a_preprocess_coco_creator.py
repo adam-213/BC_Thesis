@@ -1,6 +1,9 @@
 import json
+
 import numpy as np
 import pycocotools.mask as mask_util
+
+from a_preprocess_utils import is_mask_good
 
 
 def create_image_json(shape, image_id):
@@ -13,16 +16,20 @@ def create_image_json(shape, image_id):
     return image
 
 
-def create_annotations_json(labels, labels_info, tm, image_id, bin_transform, categories):
+def create_annotations_json(labels, labels_info, tm, image_id, bin_transform, categories, inputs, stats, stls):
     annotations = []
     uniq = np.unique(labels.flatten())
+
+    # count number of bins in the self categories
+    num_bins = sum([1 for x in categories if "bin" in x])
+
     # get a reverse dictionary for the labels
     labels_info = {v: k for k, v_list in labels_info.items() for v in v_list}
     for i, id in enumerate(uniq):
         anotation = {}
         # get the global id of the label - the labels labels_info are local to the scan
         global_id = categories.where(labels_info[id])
-        anotation["id"] = global_id  # global id of the label
+        anotation["id"] = global_id  # local id of the label
         # label name is the same in local and global context
         anotation["name"] = labels_info[id]  # human-readable name of the label
         anotation["image_id"] = image_id  # id of the image the label is in used for matching to image
@@ -30,35 +37,45 @@ def create_annotations_json(labels, labels_info, tm, image_id, bin_transform, ca
         # create the binary mask for the specific label
         mask = (labels == id).astype(np.bool)
         # encode the mask with run length encoding
-        rle = mask_util.encode(np.asfortranarray(mask))
+        rle = mask_util.encode(np.asfortranarray(mask.astype(np.bool)))
 
-        # add the rle to the annotation
-        anotation["segmentation"] = rle
-        anotation["area"] = mask_util.area(rle)
-        anotation["bbox"] = mask_util.toBbox(rle)  # here just so I don't have to change the network
+        # decide if the mask is good or not
 
-        # use the local id to identify which transform to use
-        if id == 0:
-            # background doesn't have a transform
-            anotation["transform"] = np.eye(4)
-            anotation["category_id"] = 0
-        elif id == 1:
-            # bin transform is the same for all labels - changes only on a per-scan basis
-            anotation["category_id"] = 1
-            anotation["transform"] = bin_transform
-        else:
-            # the rest of the labels have their own  transform
-            anotation["transform"] = tm[id - 2]
-            anotation["category_id"] = 2
+        if id < 2 or is_mask_good(mask, inputs, labels_info[id], stls, tm[i - 2]):
 
+            # add the rle to the annotation
+            anotation["segmentation"] = rle
+            anotation["area"] = mask_util.area(rle)
+            anotation["bbox"] = mask_util.toBbox(rle)  # here just so I don't have to change the network
 
-        # anotation["supercategory"] = labels_info[id][0] # not needed
-        # ann["iscrowd"] = 0 # not needed
-        annotations.append(anotation)
+            # use the local id to identify which transform to use
+            if id == 0:
+                # background doesn't have a transform
+                anotation["transform"] = np.eye(4)
+                anotation["category_id"] = 0
+            elif id == 1:
+                # bin transform is the same for all labels - changes only on a per-scan basis
+                anotation["category_id"] = 1
+                anotation["transform"] = bin_transform
+            else:
+                # the rest of the labels have their own  transform
+                anotation["transform"] = tm[i - 2]
+                anotation["category_id"] = global_id
+
+            # anotation["supercategory"] = labels_info[id][0] # not needed
+            # TODO consider adding the following for instances where area is less than x
+            # ann["iscrowd"] = 0 # not needed
+            annotations.append(anotation)
+            box = anotation["bbox"]
+            # ploat masks and bbox
+            import matplotlib.pyplot as plt
+            fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+            ax.imshow(mask)
+            ax.add_patch(plt.Rectangle((box[0], box[1]), box[2], box[3], fill=False, edgecolor='red', linewidth=3))
+            plt.show()
 
     # after testing, it appears that this annotations array needs to be flattened to be in the correct format
     # but more things depend on this format, so I'll do it when writing the json file
-
     return annotations
 
 
@@ -81,7 +98,7 @@ def prepare_data(image, anotations):
     return image, anotations
 
 
-def create_json(results, categories, save_path):
+def create_json(results, categories, save_path, mean, std, i):
     # read the base json file
     with open(save_path.joinpath('coco_base.json'), 'r') as f:
         coco = json.load(f)
@@ -96,6 +113,9 @@ def create_json(results, categories, save_path):
     # add the categories
     coco["categories"] = [{"id": i, "name": cat} for i, cat in enumerate(categories)]
 
+    coco["image_stats"] = {"mean": np.mean(mean, axis=0).astype(float).tolist(),
+                           "std": np.mean(std, axis=0).astype(float).tolist()}
+
     # save the json file
-    with open(save_path.joinpath('annotations', 'coco.json'), 'w') as f:
+    with open(save_path.joinpath(f'annotations', f'coco{i}.json'), 'w') as f:
         json.dump(coco, f)

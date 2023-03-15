@@ -1,13 +1,7 @@
-import time
-
-import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import torchvision
-
-from torchvision.models.detection.faster_rcnn import FastRCNNPredictor, FasterRCNN_ResNet50_FPN_Weights
-from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
 from torchvision.models.detection import fasterrcnn_resnet50_fpn as fcn_fpn50
+from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
+from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
 
 
 class gen_fcn_fpn50(nn.Module):

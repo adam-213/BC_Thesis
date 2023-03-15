@@ -1,8 +1,6 @@
-import time
-
+import torch
 from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
-import torch
 
 from b_DataLoader_RCNN import createDataLoader
 from c_UNET import UNet_InstanceSegmentation

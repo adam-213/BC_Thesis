@@ -2,19 +2,18 @@
 # For now it is run manually, but it can be automated in the future
 # However there might be rather high processing costs for that
 
+import multiprocessing as mp
 # core
 import pathlib
-from collections import OrderedDict
-import multiprocessing as mp
 
+import pycocotools.coco as coco
 # installed
 from tqdm import tqdm
-import pycocotools.coco as coco
 
 # local
 from a_preprocess_IO_Functions import *
-from a_preprocess_utils import *
 from a_preprocess_coco_creator import *
+from a_preprocess_utils import *
 
 
 class UniqueList(list):
@@ -32,13 +31,16 @@ class UniqueList(list):
                 return i
         return None
 
+    def sortself(self):
+        self.sort()
+
 
 class Preprocessor:
 
     def __init__(self):
         self.path = pathlib.Path(__file__).parent.absolute()
         self.data_path = self.path.joinpath('RawDS')
-        self.coco_path = self.path.joinpath('COCO')
+        self.coco_path = self.path.joinpath('COCO_TEST')
         self.save_path = self.coco_path.joinpath('train')
 
         if not self.save_path.exists():
@@ -100,16 +102,28 @@ class Preprocessor:
 
         return [bin_transform, labels, labels_info, part_transforms, positions, intensities, rgb, normals]
 
-    def process(self, scan_path, i):
+    def process(self, scan_path, i, stls):
         """Process single scan"""
         scan = self.scan_load(scan_path)
+        # print("Processing scan: ", scan_path)
 
-        # create dict of all the wanted data
+        # create dict of all the wanted data in fp16
+        # inputs = {}
+        # inputs['rgb'] = RGB_EXR2FP16(scan[6])
+        # inputs['depth'] = D2FP16(scan[4])
+        # inputs['normals'] = N2FP16(scan[7])
+        # inputs['intensities'] = I2FP16(scan[5])
+
+        # create dict of all the wanted data in fp32
         inputs = {}
-        inputs['rgb'] = RGB_EXR2FP16(scan[6])
-        inputs['depth'] = D2FP16(scan[4])
-        inputs['normals'] = N2FP16(scan[7])
-        inputs['intensities'] = I2FP16(scan[5])
+        inputs['rgb'] = scan[6]
+        inputs['depth'] = scan[4]
+        inputs['normals'] = scan[7]
+        inputs['intensities'] = scan[5]
+
+        # scale everything to 0-1
+        for key, value in inputs.items():
+            inputs[key] = scale(value)
 
         # get shapes for the coco json
         try:
@@ -124,17 +138,32 @@ class Preprocessor:
         # save the image array to a npz file with the correct name
         save_NPZ(inputs, self.save_path, i)
 
+        # compute mean and std for normalization for each channel in the scan
+        mean, std = [], []
+        for key, value in inputs.items():
+            value = value.reshape(value.shape[0], value.shape[1], -1)
+            for channel in range(value.shape[2]):
+                mean.append(np.mean(value[:, :, channel]))
+                std.append(np.std(value[:, :, channel]))
+
         tm = scan[3]
         labels = scan[1]
         labels_info = scan[2]
 
+        # replace inf with 0
+        mean = [0 if np.isinf(x) else x for x in mean]
+        std = [0 if np.isinf(x) else x for x in std]
+
+        stats = [mean, std]
+
         # create the annotations part of the json - for this specific scan
-        annotations = create_annotations_json(labels, labels_info, tm, i, scan[0], self.categories)
+        annotations = create_annotations_json(labels, labels_info, tm, i, scan[0], self.categories, inputs, stats,
+                                              stls)
 
         # json understands about 4 dtypes, so we need to convert the numpy dtypes to python dtypes
         result = prepare_data(image, annotations)
 
-        return result
+        return result, mean, std
 
     def worker(self, use_mp=False):
         """Process all scans"""
@@ -145,29 +174,55 @@ class Preprocessor:
             for key, value in info.items():
                 self.categories.append(key)
 
+        self.categories.sort()
+        print("Categories: ", self.categories)
+
+        # load stls for the parts so we can compute occlusion
+        stls = {}
+        stls["part_thruster"] = "stl/part_thruster1.stl"
+        stls["part_cogwheel"] = "stl/part_cogwheel1.stl"
+
         # start muliprocessing pool
         if use_mp:
             pool = mp.Pool(mp.cpu_count())
             # process all scans
             results = []
             for i, scan_path in enumerate(self.scans):
-                results.append(pool.apply_async(self.process, args=(scan_path, i)))
+                results.append(pool.apply_async(self.process, args=(scan_path, i, stls)))
             pool.close()
             pool.join()
             results = [r.get() for r in results]
+            results, means, stds = zip(*results)
         else:
             results = []
-            for i, scan_path in enumerate(tqdm(self.scans[:10])):
-                results.append(self.process(scan_path, i))
+            # for i, scan_path in enumerate(tqdm(np.array(self.scans)[list(np.random.randint(0, len(self.scans), 25))])):
+            start = 3200
+            stop = 303
+            for i, scan_path in enumerate(tqdm(self.scans[start:])):
+                i = i + start
+                if i == stop + start:
+                    res, means, stds = zip(*results)
+                    # combine the results into one json
+                    print('Creating json')
+                    print("categories: ", self.categories)
+                    create_json(res, self.categories, self.coco_path, means, stds, f"_End_{start}_{stop+start}")
+                    return
+                results.append(self.process(scan_path, i, stls))
+                if i % 50 == 0 and i != start:
+                    res, means, stds = zip(*results)
 
-        # combine the results into one json
+                    # combine the results into one json
+                    print('Creating json')
+                    print("categories: ", self.categories)
+                    create_json(res, self.categories, self.coco_path, means, stds, i)
+
         print('Creating json')
         print("categories: ", self.categories)
-        create_json(results, self.categories, self.coco_path)
+        create_json(results, self.categories, self.coco_path, means, stds, "all")
 
 
 if __name__ == '__main__':
     preprocessor = Preprocessor()
     preprocessor.load_scan_paths()
-    preprocessor.worker(use_mp=True)
+    preprocessor.worker(use_mp=False)
     print('Done')

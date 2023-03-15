@@ -1,12 +1,9 @@
 import os
 import pathlib
-import time
 
-import torch
 import torchvision
 import torchvision.transforms
 from PIL import Image
-from pycocotools import mask as coco_mask
 from torch.utils.data import DataLoader
 from torchvision.datasets import CocoDetection
 
@@ -89,7 +86,6 @@ def collate_fn(batch):
 
 
 import torch
-import numpy as np
 from pycocotools import mask as coco_mask
 
 

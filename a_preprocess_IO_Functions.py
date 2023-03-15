@@ -6,8 +6,6 @@ import os
 os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
 import cv2 as cv
 import numpy as np
-import pickle
-import bz2
 
 
 def load_bin_transform(path):

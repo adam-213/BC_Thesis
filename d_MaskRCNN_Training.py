@@ -1,5 +1,3 @@
-import time
-
 from b_DataLoader_RCNN import createDataLoader
 from c_MaskRCNN import MaskRCNN
 
@@ -9,58 +7,57 @@ import torch.nn.functional as F
 import torchvision
 from tqdm import tqdm
 from torch.utils.checkpoint import checkpoint
-
-
-class MaskLoss(nn.Module):
-    def __init__(self):
-        super(MaskLoss, self).__init__()
-
-    def forward(self, mask_logits, targets):
-        # Compute the binary cross-entropy loss
-        # loss = nn.functional.binary_cross_entropy_with_logits(mask_logits, targets)
-        x = torch.tensor(0.00)
-        x.requires_grad_(True)
-        return x.cuda()
+import matplotlib.pyplot as plt
 
 
 def targets2(targets, device):
+    # transfer all targets  in the dictionary to device
     for target in targets:
         for key, val in target.items():
             target[key] = target[key].to(device)
 
 
+def train(model, dataloader, optimizer, criterion):
+    scaler = GradScaler()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.train()
+    losses_list = []
+    for idx, (images, targets) in enumerate(dataloader):
+        images = list(image.to(device) for image in images)
+        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+        optimizer.zero_grad()
+        with autocast():
+            loss_dict = model(images, targets)
+            # loss_dict = model(images, targets)
+            losses = sum(loss for loss in loss_dict.values())
+        scaler.scale(losses).backward()
+        scaler.step(optimizer)
+        scaler.update()
+        print(losses.item(), f"batch: {idx}/{len(dataloader)}, epoch: {epoch}")
+        losses_list.append(losses.item())
+
+    return losses_list
+
+
 if __name__ == '__main__':
     from torch.cuda.amp import autocast, GradScaler
 
+    dataset, dataloader = createDataLoader()
+    mean, std = dataloader.dataset.mean[:7], dataloader.dataset.std[:7]
+    model = MaskRCNN(7, 5, mean, std)
+    # pytorch sum loss
+    mask_loss = torch.nn.MSELoss(reduction='mean')
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.00001, weight_decay=0.0001)
     scaler = GradScaler()
 
-    dataset, dataloader = createDataLoader()
-    model = MaskRCNN(3, 3)
-    mask_loss = MaskLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
-
     model.cuda()
-    mask_loss.cuda()
-    for i, batch in enumerate(tqdm(dataloader)):
-        with autocast():
-            images, targets = batch[0], batch[1]
-            images = images.cuda()
-            targets2(targets, 'cuda')
-            del batch
-            # torch.cuda.reset_max_memory_allocated()
-            # print("to cuda",torch.cuda.max_memory_allocated())
-            # time.sleep(10)
+    criterion = torch.nn.CrossEntropyLoss()
+    lossess = []
+    for epoch in range(5):
+        lossess.extend(train(model, dataloader, optimizer, criterion))
 
-            # forward pass
-            outputs = checkpoint(model, images, targets)
+        plt.plot(lossess)
+        plt.show()
 
-            # compute loss
-            loss = mask_loss(outputs, targets)
-            # del outputs
-            # del targets
-            # del images
-
-        # backward pass
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+    # save model
+    torch.save(model.state_dict(), "model_blender_5epoch_small32ds_nopretrain.pth")
