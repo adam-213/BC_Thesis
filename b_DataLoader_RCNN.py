@@ -144,7 +144,7 @@ def collate_fn_rcnn(batch, channels=None):
     return batched_images, prepared_targets
 
 
-def collate_TM_GT(batch, channels=None, instances=4):
+def collate_TM_GT(batch, channels=None):
     """Custom collate function to prepare data for the model"""
     images, targets = zip(*batch)
 
@@ -158,42 +158,11 @@ def collate_TM_GT(batch, channels=None, instances=4):
     # Prepare targets
     prepared_targets = prepare_targets(targets)
     del targets
-
-    # concat the image to the mask - this pains me greatly as it will be a lot of memory
-    # but torch doesn't support referenced tensors, so i cant just reference the always the same image
-
-    images, masks, tms = [], [], []
-    # if there are less than 8 instances, pad with zeros
-    for image, target in zip(batched_images, prepared_targets):
-        # get the targets
-        mask = target['masks']
-        tm = target['tm']
-        # split the mask and tm into chunks of 8
-        mask_chunks = torch.split(mask, instances, dim=0)
-        tm_chunks = torch.split(tm, instances, dim=0)
-
-        for m, t in zip(mask_chunks, tm_chunks):
-            # if there are less than 8 instances, pad with zeros
-            if m.shape[0] < instances:
-                dif = instances - m.shape[0]
-                zero = torch.zeros((dif, m.shape[1], m.shape[2]), dtype=torch.float32)
-                m = torch.cat((m, zero), dim=0)
-                zero = torch.zeros((dif, t.shape[1], t.shape[2]), dtype=torch.float32)
-                t = torch.cat((t, zero), dim=0)
-            images.append(image)
-            masks.append(m)
-            tms.append(t)
-
-    # Stack the 3 matrices to get batches of 8 instances
-    batched_images = torch.stack(images, dim=0)
-    masks = torch.stack(masks, dim=0)
-    tms = torch.stack(tms, dim=0)
-
-    # Effectively transforming fixed batch size and variable insntance count
-    # to variable batch size and fixed instance count
+    masks = [target['masks'] for target in prepared_targets]
+    tm = [target['tm'] for target in prepared_targets]
 
     # Return batch as a tuple
-    return batched_images, masks, tms
+    return batched_images, masks, tm
 
 
 from torch.utils.data import DataLoader, Subset, random_split
@@ -202,25 +171,21 @@ from torch.utils.data import DataLoader, Subset, random_split
 class CollateWrapper:
     # Lambas are a nono in multiprocessing
     # need to be able to pickle the collate function to use it in multiprocessing, can't pickle lambdas
-    def __init__(self, channels, model, instances=None):
+    def __init__(self, channels, model):
         if model == "rcnn":
             self.collate_fn = collate_fn_rcnn
         elif model == "tm":
             self.collate_fn = collate_TM_GT
         self.channels = channels
-        self.instances = instances
 
     def __call__(self, batch):
-        if self.instances:
-            return self.collate_fn(batch, self.channels, self.instances)
         return self.collate_fn(batch, self.channels)
 
 
-def createDataLoader(path, bs=1, shuffle=True, num_workers=5, channels: list = None, split=0.9, model="rcnn",
-                     instances=None):
+def createDataLoader(path, bs=1, shuffle=True, num_workers=2, channels: list = None, split=0.9, model="rcnn"):
     ano_path = (path.joinpath('annotations', "merged_coco.json"))
 
-    collate = CollateWrapper(channels, model, instances)
+    collate = CollateWrapper(channels, model)
 
     # Load the COCO dataset
     dataset = CustomCocoDetection(root=str(path), annFile=str(ano_path))

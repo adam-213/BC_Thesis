@@ -8,8 +8,6 @@ import matplotlib.pyplot as plt
 from IPython.display import clear_output
 import pathlib
 
-import pathlib
-
 from c_TM_CNN import TM_CNN
 from b_DataLoader_RCNN import createDataLoader
 
@@ -23,63 +21,61 @@ class Trainer:
         self.device = device
         self.scaler = scaler
 
-    def train(self, epochs):
+    def train(self, epochs, batch_size):
         for epoch in range(epochs):
             running_loss = 0.0
             for i, (images, masks, tms) in enumerate(self.train_loader):
-                # split the batch into mini-batches
-                images = images.to(self.device)
-                masks = masks.to(self.device)
-                tms = tms.to(self.device)
+                for idx, image in enumerate(images):
+                    slices = max(1, masks[idx].shape[0] // batch_size)
+                    for slice in range(slices):
+                        minimasks = masks[idx][slice:slice + batch_size]
+                        minitms = tms[idx][slice:slice + batch_size]
 
-                for minimini_batch in range(0, images.shape[0], 2):
-                    # zero the parameter gradients
-                    self.optimizer.zero_grad()
+                        minimasks.squeeze_(0)
+                        minitms.squeeze_(0)
+                        # stack the image to the same size as the masks
+                        if len(minimasks.shape) != 3:
+                            minimasks = minimasks.unsqueeze(0)
+                            minitms = minitms.unsqueeze(0)
 
-                    with autocast():
-                        # forward + backward + optimize
-                        outputs = self.model(images[minimini_batch:minimini_batch + 2],
-                                             masks[minimini_batch:minimini_batch + 2])
-                        print("stop")
-                        loss = self.model.loss(outputs, tms[minimini_batch:minimini_batch + 2])
+                        image_stacked = torch.stack([image] * minimasks.shape[0])
 
-                    self.scaler.scale(loss).backward()
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
+                        self.optimizer.zero_grad()
 
-                    # print statistics
-                    running_loss += loss.item()
-                    if i % 10 == 9:
-                        print('[%d, %5d] loss: %.3f' %
-                              (epoch + 1, i + 1, running_loss / 10))
-                        running_loss = 0.0
+                        #print(image_stacked.shape, minimasks.shape, minitms.shape)
 
-                # # zero the parameter gradients
-                # self.optimizer.zero_grad()
-                #
-                # with autocast():
-                #     # forward + backward + optimize
-                #     outputs = self.model(images, masks)
-                #     loss = self.criterion(outputs, tms)
-                #
-                # self.scaler.scale(loss).backward()
-                # self.scaler.step(self.optimizer)
-                # self.scaler.update()
+                        image_stacked = image_stacked.to(self.device)
+                        minimasks = minimasks.to(self.device)
+                        minitms = minitms.to(self.device)
+
+
+
+                        with autocast():
+                            outputs = self.model(image_stacked, minimasks)
+                            loss = self.model.loss(outputs, minitms)
+
+                        self.scaler.scale(loss).backward()
+                        self.scaler.step(self.optimizer)
+                        self.scaler.update()
+
+                        running_loss += loss.item()
+
+                print(f"Loss: {running_loss / slices}, Batch: {i}/{len(self.train_loader)}, Epoch: {epoch}")
+                running_loss = 0.0
 
 
 if __name__ == "__main__":
     base_path = pathlib.Path(__file__).parent.absolute()
     coco_path = base_path.joinpath('COCO_TEST')
     channels = [0, 1, 2, 3, 4, 5, 9]
-    instances = 1
-    train_dataloader, val_dataloader, stats = createDataLoader(coco_path, 1, channels=channels,
-                                                               model="tm", instances=instances)
+    train_dataloader, val_dataloader, stats = createDataLoader(coco_path, 4, channels=channels,
+                                                               model="tm")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model = TM_CNN(in_channels=len(channels), attention_channels=32, instances=instances).to(device)
+    model = TM_CNN(in_channels=len(channels), attention_channels=64).to(device)
     optimizer = Adam(model.parameters(), lr=0.001)
     scaler = GradScaler()
 
     trainer = Trainer(model, train_dataloader, val_dataloader, optimizer, device, scaler)
-    trainer.train(epochs=50)
+    trainer.train(epochs=50, batch_size=4)
