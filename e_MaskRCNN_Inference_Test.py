@@ -60,4 +60,4 @@ if __name__ == '__main__':
     outputs = model(images)
 
     images_cpu = images.cpu()
-    visualize_output(images_cpu, targets, outputs, threshold=0.1)
+    visualize_output(images_cpu, targets, outputs, threshold=0.2)

@@ -7,28 +7,13 @@ from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
 
 
-def normalize(self, image: torch.Tensor) -> torch.Tensor:
-    # TODO FIXME: rewrite to accept arbitrary number of channels
-    # Turns out this doesn't need to be changed, what needed to be changed is the self.image_mean and self.image_std
-    # because if they are None, the code will use the default values which are 3 channel
-    if not image.is_floating_point():
-        raise TypeError(
-            f"Expected input images to be of floating type (in range [0, 1]), "
-            f"but found type {image.dtype} instead"
-        )
-    dtype, device = image.dtype, image.device
-    mean = torch.as_tensor(self.image_mean, dtype=dtype, device=device)
-    std = torch.as_tensor(self.image_std, dtype=dtype, device=device)
-    return (image - mean[:, None, None]) / std[:, None, None]
-
-
 class MaskRCNN(nn.Module):
     # change the first layer of the backbone to accept arbitrary number of channels
     def __init__(self, in_channels=3, num_classes=3, mean=None, std=None):
         super(MaskRCNN, self).__init__()
 
         self.model = fpn_maskrcnn50(in_channels=in_channels,
-                                    #pretrained_weights=MaskRCNN_ResNet50_FPN_V2_Weights.DEFAULT,
+                                    # pretrained_weights=MaskRCNN_ResNet50_FPN_V2_Weights.DEFAULT,
                                     num_classes=num_classes,
                                     )
 
@@ -59,7 +44,7 @@ class MaskRCNN(nn.Module):
         in_features_box = self.model.roi_heads.box_predictor.cls_score.in_features
         in_features_mask = self.model.roi_heads.mask_predictor.conv5_mask.in_channels
 
-        # replace the box and mask heads with new ones
+        # replace the box and mask heads with new ones that have num_classes which is based on the number of classes
         self.model.roi_heads.box_predictor = FastRCNNPredictor(in_features_box, num_classes)
         self.model.roi_heads.mask_predictor = MaskRCNNPredictor(in_channels=in_features_mask,
                                                                 dim_reduced=256,
@@ -72,18 +57,25 @@ class MaskRCNN(nn.Module):
     def forward(self, images, targets=None):
         return self.model(images, targets)
 
-    # def customload(self, path, device, channels=10):
-    #     if channels == 10:
-    #         self.model.load_state_dict(torch.load(path))
-    #         return
-    #     elif type(channels) == list or type(channels) == np.array or type(channels) == tuple:
-    #         nc = len(channels)
-    #         channels = channels
-    #     else:
-    #         nc = channels
-    #         channels = list(range(channels))
-    #
-    #     # load the state dict
-    #     state_dict = torch.load(path)
-    #
-    #     # TODO finish loading the state dict for arbitrary number of channels
+    def customload(self, path, device, channels=10):
+        # Load the pre-trained state dict
+        state_dict = torch.load(path, map_location=device)
+
+        if isinstance(channels, (list, np.ndarray, tuple)):
+            nc = len(channels)
+        else:
+            nc = channels
+            channels = list(range(channels))
+
+        if nc != 10:
+            # Get the weights of the first convolution layer
+            conv1_weights = state_dict['backbone.body.conv1.weight']
+
+            # Calculate the mean of the weights along the input channel dimension for the selected channels
+            new_conv1_weights = conv1_weights[:, channels, :, :].mean(dim=1, keepdim=True)
+
+            # Update the weights of the first convolution layer in the state dict
+            state_dict['backbone.body.conv1.weight'] = new_conv1_weights
+
+        # Load the updated state dict into the current model
+        self.model.load_state_dict(state_dict)
