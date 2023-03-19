@@ -182,7 +182,7 @@ class CollateWrapper:
         return self.collate_fn(batch, self.channels)
 
 
-def createDataLoader(path, bs=1, shuffle=True, num_workers=2, channels: list = None, split=0.9, model="rcnn"):
+def createDataLoader(path, bs=1, shuffle=True, num_workers=4, channels: list = None, split=0.9, model="rcnn"):
     ano_path = (path.joinpath('annotations', "merged_coco.json"))
 
     collate = CollateWrapper(channels, model)

@@ -34,11 +34,12 @@ class TM_CNN(nn.Module):
         super(TM_CNN, self).__init__()
         self.conv1 = nn.Conv2d(in_channels, 32, kernel_size=3, stride=1, padding=1)
         self.conv2 = nn.Conv2d(32, 32, kernel_size=3, stride=1, padding=1)
-        self.conv3 = nn.Conv2d(32, 16, kernel_size=3, stride=1, padding=1)
-        self.attention = Attention(16, 16)
-        self.fc1 = nn.Linear(792576//2//2, 512)
-        self.fc2 = nn.Linear(512, 256)
-        self.fc3 = nn.Linear(256, 16)
+        self.conv3 = nn.Conv2d(32, 24, kernel_size=3, stride=1, padding=1)
+        self.attention = Attention(24, 24)
+        self.fc1 = nn.Linear(int(792576 // 2 // 2 * 1.5), 512)
+        #self.fc2 = nn.Linear(8192, 1024)
+        self.fc3 = nn.Linear(512, 256)
+        self.fc4 = nn.Linear(256, 16)
         self.maxpool = nn.MaxPool2d(kernel_size=2, stride=2)
 
     def forward(self, x, masks):
@@ -52,8 +53,9 @@ class TM_CNN(nn.Module):
         x = self.attention(x, masks)
         x = x.view(x.size(0), -1)
         x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
+        #x = F.relu(self.fc2(x))
+        x = F.relu(self.fc3(x))
+        x = self.fc4(x)
         return x
 
     def reshape_masks(self, masks):
