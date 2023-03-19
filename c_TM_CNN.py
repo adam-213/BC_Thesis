@@ -1,77 +1,86 @@
+import random
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torchvision.models import resnet18, ResNet18_Weights, resnet34, ResNet34_Weights
 
-class Attention(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super(Attention, self).__init__()
 
-        self.conv_mask = nn.Conv2d(1, out_channels, kernel_size=1, stride=1, padding=0)
-        self.conv_feat = nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=1, padding=0)
-        self.conv_out = nn.Conv2d(out_channels, out_channels, kernel_size=1, stride=1, padding=0)
-        self.gamma = nn.Parameter(torch.zeros(1))
-        self.out_channels = out_channels
+class CustomTransformerEncoder(nn.Module):
+    def __init__(self, d_model, nhead, num_layers=1):
+        super(CustomTransformerEncoder, self).__init__()
+        self.transformer_encoder_layer = nn.TransformerEncoderLayer(d_model, nhead)
+        self.transformer_encoder = nn.TransformerEncoder(self.transformer_encoder_layer, num_layers)
 
-    def forward(self, x, masks):
-        batch_size, _, _ = masks.size()
-        feat = self.conv_feat(x)
-        out = torch.zeros_like(feat)
-
-        masks = self.conv_mask(masks.unsqueeze(1))
-        masks = F.softmax(masks.view(batch_size, -1), dim=-1).view_as(masks)
-
-        instance_feat = feat * masks
-        instance_feat = self.conv_out(instance_feat)
-        out += instance_feat
-
-        out = self.gamma * out + x
-        return out
+    def forward(self, src):
+        return self.transformer_encoder(src)
 
 
 class TM_CNN(nn.Module):
-    def __init__(self, in_channels, attention_channels):
+    def __init__(self, in_channels, d_model, nhead, num_layers=1):
         super(TM_CNN, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels, 32, kernel_size=3, stride=1, padding=1)
-        self.conv2 = nn.Conv2d(32, 32, kernel_size=3, stride=1, padding=1)
-        self.conv3 = nn.Conv2d(32, 24, kernel_size=3, stride=1, padding=1)
-        self.attention = Attention(24, 24)
-        self.fc1 = nn.Linear(int(792576 // 2 // 2 * 1.5), 512)
-        #self.fc2 = nn.Linear(8192, 1024)
-        self.fc3 = nn.Linear(512, 256)
-        self.fc4 = nn.Linear(256, 16)
-        self.maxpool = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.resnet = resnet34()
+        self.resnet.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.resnet = nn.Sequential(*list(self.resnet.children())[:-2])
 
-    def forward(self, x, masks):
-        masks = self.reshape_masks(masks)
-        x = F.relu(self.conv1(x))
-        x = self.maxpool(x)
-        x = F.relu(self.conv2(x))
-        x = self.maxpool(x)
-        x = F.relu(self.conv3(x))
-        x = self.maxpool(x)
-        x = self.attention(x, masks)
-        x = x.view(x.size(0), -1)
+        self.transformer = CustomTransformerEncoder(d_model, nhead, num_layers)
+
+        self.fc1 = nn.Linear(422400, 256)
+        self.dropout1 = nn.Dropout(0.5)
+        self.fc2 = nn.Linear(256, 192)
+        self.dropout2 = nn.Dropout(0.5)
+        self.fc3 = nn.Linear(192, 16)
+
+    def forward(self, x):
+        x = self.resnet(x)
+
+        b, c, h, w = x.size()
+        x = x.view(b, c, h * w)
+        x = x.permute(0, 2, 1)
+        x = self.transformer(x)
+        x = x.permute(0, 2, 1)
+        # x = x.view(b, -1)
+        x = x.reshape(b, -1)
+
         x = F.relu(self.fc1(x))
-        #x = F.relu(self.fc2(x))
-        x = F.relu(self.fc3(x))
-        x = self.fc4(x)
-        return x
+        x = self.dropout1(x)
+        x = F.relu(self.fc2(x))
+        x = self.dropout2(x)
+        x = self.fc3(x)
 
-    def reshape_masks(self, masks):
-        masks.unsqueeze_(1)
-        batch_size, channels, height, width = masks.size()
-        masks = F.interpolate(masks, size=(height // 8, width // 8), mode='nearest')
-        return masks.squeeze(1)
+        return x
 
     def loss(self, pred, gt):
         pred = pred.view(-1, 4, 4)
         pred_r = pred[:, :3, :3]
-        pred_t = pred[:, :3, 3]
+        pred_t = pred[:, 3, :3]
         gt_r = gt[:, :3, :3]
-        gt_t = gt[:, :3, 3]
+        gt_t = gt[:, 3, :3]
 
         loss_t = F.mse_loss(pred_t, gt_t)
-        loss_r = torch.norm(pred_r - gt_r, p='fro', dim=(1, 2)) + torch.norm(pred_r - gt_r, p=2, dim=(1, 2))
-        loss_r = torch.mean(loss_r)
-        return loss_t + loss_r
+
+        # Geodesic loss for rotation
+        R = pred_r.bmm(gt_r.transpose(1, 2))
+        trace = torch.diagonal(R, dim1=1, dim2=2).sum(dim=1)
+        trace = torch.clamp(trace, min=-1.0 + 1e-7, max=1.0 - 1e-7)  # Clip trace to a valid range
+        loss_r = torch.mean(torch.arccos((trace - 1) / 2))
+
+        # Penalty for non-zero elements in specific positions
+        zero_positions = pred[:, :3, 3]
+        penalty = torch.mean(zero_positions ** 2)
+
+        if random.random() < 0.01:
+            print("gt", gt[0])
+            print("pred", pred[0])
+        # Weights for translation, rotation, and penalty
+        w_t = 1
+        w_r = 300
+        w_p = 1
+
+        total_loss = w_t * loss_t + w_r * loss_r + 0 * penalty
+
+        return total_loss
