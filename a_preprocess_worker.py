@@ -40,7 +40,7 @@ class Preprocessor:
     def __init__(self):
         self.path = pathlib.Path(__file__).parent.absolute()
         self.data_path = self.path.joinpath('RawDS')
-        self.coco_path = self.path.joinpath('COCO_TEST')
+        self.coco_path = self.path.joinpath('CCO_TE')
         self.save_path = self.coco_path.joinpath('train')
 
         if not self.save_path.exists():
@@ -196,7 +196,7 @@ class Preprocessor:
         else:
             results = []
             # for i, scan_path in enumerate(tqdm(np.array(self.scans)[list(np.random.randint(0, len(self.scans), 25))])):
-            start = 3200
+            start = 3242
             stop = 303
             for i, scan_path in enumerate(tqdm(self.scans[start:])):
                 i = i + start

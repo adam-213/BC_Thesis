@@ -8,6 +8,7 @@ import numpy as np
 from PIL import Image
 from scipy import ndimage
 from scipy.spatial.transform import Rotation
+import matplotlib.pyplot as plt
 
 
 def D2FP16(depth):
@@ -86,28 +87,10 @@ def save_NPZ(arr_dict, save_path, index):
 
 def scale(arr):
     # scale to 0 - 1
-    # arr = arr - np.min(arr)
+    arr = arr - np.min(arr)
     arr = arr / np.max(arr)
 
     return arr
-
-
-# Probably not actually used, but I'm keeping it just in case
-def apply_base_rotation(T, rot):
-    """The default orientation of some objects is just super wierd, and totaly not intuitive. This function
-    rotates the object to a more intuitive orientation."""
-
-    # create a rotation object representing the desired orientation
-    rot = Rotation.from_euler('xyz', rot, degrees=True)
-    RT = rot.as_matrix()
-
-    # 1x16 to 4x4
-    T = T.reshape((4, 4))
-
-    # combine the rotation matrix with the transformation matrix
-    T[:3, :3] = RT @ T[:3, :3]
-
-    return T
 
 
 def render(path, T):
@@ -239,11 +222,11 @@ def is_mask_good(mask, image, category, stls, T, occlusion=0.17):
     labeled_mask, num_features = ndimage.label(mask)
 
     # # ### DEBUGGING ###
-    # # plot the masks for debugging
-    # fig, ax = plt.subplots(figsize=(10, 10))
-    # # draw mask in red channel
-    # # draw render mask in green channel
-    #
+    # plot the masks for debugging
+    #fig, ax = plt.subplots(figsize=(10, 10))
+    # draw mask in red channel
+    # draw render mask in green channel
+
     # img = np.zeros((image["rgb"].shape[0], image["rgb"].shape[1], 3))
     # img[:, :, 0] = mask * 255
     # img[:, :, 1] = render_mask * 255
@@ -264,8 +247,8 @@ def is_mask_good(mask, image, category, stls, T, occlusion=0.17):
     # ax.text(0, 250, f"OK: {np.sum(overlap) / np.sum(render_mask) > 1 - occlusion}", color="red")
     #
     # fig.savefig(f"E:\\zmasked{random.randint(1000, 100000)}.png")
-    # #
-    # # ### DEBUGGING ###
+    #
+    # ### DEBUGGING ###
 
     if np.sum(overlap) / np.sum(render_mask) > 1 - occlusion and num_features == 1:
         return True

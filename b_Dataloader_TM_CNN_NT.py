@@ -8,6 +8,8 @@ from torch.utils.data import DataLoader
 from torchvision.datasets import CocoDetection
 import matplotlib.pyplot as plt
 from matplotlib import patches
+from torch.utils.data import DataLoader, Subset, random_split
+from scipy.spatial.transform import Rotation
 
 
 # Custom loader is needed to load RGB-A images - (4 channels) which in my case are RGB-D images
@@ -32,13 +34,25 @@ class CustomCocoDetection(CocoDetection):
         image = np.dstack(img_arrays).astype(np.float32)
         # Channels are in the order of
         # R,G,B, X,Y,Z, NX,NY,NZ ,I
-        return torch.from_numpy(image).type(torch.float32)
+        image = torch.from_numpy(image).type(torch.float32)
+
+        image_scaled = scale(image)
+
+        return image_scaled
 
     def _load_target(self, id: int):
         # override the _load_target becaiuse the original one is doing some weird stuff
         # no idea why it is doing that
         x = self.coco.imgToAnns[id]
         return x
+
+
+def scale(image):
+    # image appears to be -1 to 1
+    # scale to 0 to 1
+    image = (image + 1) / 2
+    #print("Image min: ", image.min(), " max: ", image.max())
+    return image
 
 
 def prepare_masks(target):
@@ -89,80 +103,100 @@ def prepare_targets(targets) -> list:
         inst_transforms = torch.stack(inst_transforms, dim=0)
         inst_transforms = inst_transforms.type(torch.float32)
 
-        # Bounding Boxes
-        bbox = [torch.tensor([inst['bbox'][0], inst['bbox'][1], inst['bbox'][0] + inst['bbox'][2],
-                              inst['bbox'][1] + inst['bbox'][3]]).view(1, 4) for inst in target]
-        bbox = torch.cat(bbox, dim=0)
-
-        bbox = bbox.type(torch.float32)
-
         # Store in dictionary
         prepared_target['masks'] = inst_masks.float()
         prepared_target['tm'] = inst_transforms.float()
-        prepared_target['boxes'] = bbox.float()
-        prepared_target['area'] = torch.tensor([inst['area'] for inst in target]).float()
         # labels need to be int64, such overkill
         prepared_target['labels'] = torch.tensor(inst_labels, dtype=torch.int64)
-
-        # Don't know if necessary
-        # prepared_target['image_id'] = torch.tensor([target[0]['image_id']])
-
-        # Not defined - not needed
-        # prepared_target['iscrowd'] = torch.zeros((bbox.shape[0],), dtype=torch.int8)
+        prepared_target['names'] = np.array([np.array(inst['name']) for inst in target])
 
         prepared_targets.append(prepared_target)
-
-        # # plot the masks and bounding boxes using patches
-        # fig, ax = plt.subplots(1)
-        # #ax.imshow(image)
-        # for i in range(len(inst_masks)):
-        #     mask = inst_masks[i]
-        #     box = bbox[i]
-        #     rect = patches.Rectangle((box[0], box[1]), box[2] - box[0], box[3] - box[1], linewidth=1, edgecolor='r',
-        #                              facecolor='none')
-        #     ax.add_patch(rect)
-        #     ax.imshow(mask, alpha=0.5)
-        #     plt.show()
 
     # List of dictionaries - one dictionary per image
     return prepared_targets
 
 
-def collate_fn_rcnn(batch, channels=None):
+def homog_to_trans_and_axis_angle(homog):
+    batchsize = homog.shape[0]
+    R = homog[:, :3, :3]
+    t = homog[:, :3, 3]
+    r = Rotation.from_matrix(R)
+    axis_angle = r.as_rotvec()
+    return t, torch.Tensor(axis_angle)
+
+
+def collate_TM_GT(batch, channels=None):
     """Custom collate function to prepare data for the model"""
     images, targets = zip(*batch)
 
     # Stack images on first dimension to get a tensor of shape (batch_size, C, H, W)
     batched_images = torch.stack(images, dim=0).permute(0, 3, 1, 2)
+    del images
     # Select channels to use
     if channels:
         batched_images = batched_images[:, channels, :, :]
-    # For some reason this needs to be under the channel selection
-    batched_images.requires_grad_(True)  # RCNN needs gradients on input images
 
     # Prepare targets
     prepared_targets = prepare_targets(targets)
-    # "Heuristic" was applied in the preprocess step as there was much more data to work with
+    del targets
+
+    # Will need to turn image + instances into a microbatch but this is better done in the training loop
+    # because of vram limitations
+
+    # strip the first 2 entries in everything - backround and bin - not needed possibly break stuff
+    masks = [prepared_target['masks'][2:] for prepared_target in prepared_targets]
+
+    # Transform matrices into translation and axis angle rotation representation
+    tms = [prepared_target['tm'][2:] for prepared_target in prepared_targets]
+
+    labels = [prepared_target['labels'][2:] for prepared_target in prepared_targets]
+    names = [prepared_target['names'][2:] for prepared_target in prepared_targets]
+
+    # check if the targets are empty
+    empty = []
+    for i in range(len(labels)):
+        if len(labels[i]) == 0:
+            empty.append(i)
+    # remove the empty targets
+    for i in sorted(empty, reverse=True):
+        del masks[i], tms[i], labels[i], names[i],
+        # tensor doesn't have a del function
+        # gotta do it like this
+        batched_images = torch.cat((batched_images[:i], batched_images[i + 1:]), 0)
+
+    masks, tms, labels, names = permute_microbatch(masks, tms, labels, names)
+
+    translation, axis_angle = zip(*[homog_to_trans_and_axis_angle(tm) for tm in tms])
 
     # Return batch as a tuple
-    return batched_images, prepared_targets
+    return batched_images, masks, axis_angle, translation, names
 
 
-from torch.utils.data import DataLoader, Subset, random_split
+def permute_microbatch(masks, tms, labels, names):
+    # permute the channels of the microbatch == permute the instances == permute the microbatch
+    for idx, (mask, tm, label, name) in enumerate(zip(masks, tms, labels, names)):
+        # permute the instances
+        perm = torch.randperm(mask.shape[0])
+        masks[idx] = mask[perm]
+        tms[idx] = tm[perm]
+        labels[idx] = label[perm]
+        names[idx] = name[perm.tolist()]
+    # names / labels should be predicted by the mask rcnn in the full pipeline
+    return masks, tms, labels, names
 
 
 class CollateWrapper:
     # Lambas are a nono in multiprocessing
     # need to be able to pickle the collate function to use it in multiprocessing, can't pickle lambdas
     def __init__(self, channels):
-        self.collate_fn = collate_fn_rcnn
+        self.collate_fn = collate_TM_GT
         self.channels = channels
 
     def __call__(self, batch):
         return self.collate_fn(batch, self.channels)
 
 
-def createDataLoader(path, bs=1, shuffle=True, num_workers=4, channels: list = None, split=0.9):
+def createDataLoader(path, batchsize=1, shuffle=True, num_workers=4, channels: list = None, split=0.9):
     ano_path = (path.joinpath('annotations', "merged_coco.json"))
 
     collate = CollateWrapper(channels)
@@ -178,9 +212,9 @@ def createDataLoader(path, bs=1, shuffle=True, num_workers=4, channels: list = N
     train_set, val_set = random_split(dataset, [train_len, val_len])
 
     # Create the PyTorch dataloaders for train and validation sets
-    train_dataloader = DataLoader(train_set, batch_size=bs, shuffle=shuffle, num_workers=num_workers,
+    train_dataloader = DataLoader(train_set, batch_size=batchsize, shuffle=shuffle, num_workers=num_workers,
                                   collate_fn=collate)
-    val_dataloader = DataLoader(val_set, batch_size=bs, shuffle=False, num_workers=num_workers,
+    val_dataloader = DataLoader(val_set, batch_size=batchsize, shuffle=False, num_workers=num_workers,
                                 collate_fn=collate)
 
-    return train_dataloader, val_dataloader, (dataset.mean, dataset.std)
+    return train_dataloader, val_dataloader
