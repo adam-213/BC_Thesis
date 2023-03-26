@@ -177,6 +177,10 @@ def createDataLoader(path, bs=1, shuffle=True, num_workers=4, channels: list = N
     # Create the train and validation subsets
     train_set, val_set = random_split(dataset, [train_len, val_len])
 
+    # cut the dataset to a smaller size for testing
+    # train_set = Subset(train_set, range(20))
+    # val_set = Subset(val_set, range(10))
+
     # Create the PyTorch dataloaders for train and validation sets
     train_dataloader = DataLoader(train_set, batch_size=bs, shuffle=shuffle, num_workers=num_workers,
                                   collate_fn=collate)

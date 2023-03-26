@@ -37,6 +37,13 @@ class CustomCocoDetection(CocoDetection):
         image = torch.from_numpy(image).type(torch.float32)
 
         image_scaled = scale(image)
+        # so the image is in the range of 0 to 1 not 0.5 to 1 as it is now
+        # image_scaled[5] = (image_scaled[5] - 0.5) * 2
+        # try:
+        #     assert image_scaled[5].min() >= 0 and image_scaled[5].max() <= 1, "Image is not in the range of 0 to 1"
+        # except AssertionError as e:
+        #     print("Image min: ", image_scaled[5].min(), " max: ", image_scaled[5].max())
+        #     raise e
 
         return image_scaled
 
@@ -51,7 +58,7 @@ def scale(image):
     # image appears to be -1 to 1
     # scale to 0 to 1
     image = (image + 1) / 2
-    #print("Image min: ", image.min(), " max: ", image.max())
+    # print("Image min: ", image.min(), " max: ", image.max())
     return image
 
 
@@ -103,6 +110,10 @@ def prepare_targets(targets) -> list:
         inst_transforms = torch.stack(inst_transforms, dim=0)
         inst_transforms = inst_transforms.type(torch.float32)
 
+        if torch.isnan(inst_transforms).any() or torch.isinf(inst_transforms).any():
+            print("Targets are nan or inf")
+            print(targets)
+            raise ValueError("Targets are nan or inf")
         # Store in dictionary
         prepared_target['masks'] = inst_masks.float()
         prepared_target['tm'] = inst_transforms.float()
@@ -167,6 +178,8 @@ def collate_TM_GT(batch, channels=None):
     masks, tms, labels, names = permute_microbatch(masks, tms, labels, names)
 
     translation, axis_angle = zip(*[homog_to_trans_and_axis_angle(tm) for tm in tms])
+
+    # scale the tranlation to -1, 1 range and substract 600 from z
 
     # Return batch as a tuple
     return batched_images, masks, axis_angle, translation, names

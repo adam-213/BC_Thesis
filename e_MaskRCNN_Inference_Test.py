@@ -2,6 +2,7 @@ import torch
 import matplotlib.pyplot as plt
 import cv2
 import numpy as np
+import pathlib
 
 from b_DataLoader_RCNN import createDataLoader
 from c_MaskRCNN import MaskRCNN
@@ -18,7 +19,7 @@ def display_image_and_mask(image, mask, box, threshold=0.1):
     img = cv2.addWeighted(img, 1, overlay, 0.5, 0)
 
     x1, y1, x2, y2 = box
-    rect = plt.Rectangle((x1, y1), x2-x1, y2-y1, fill=False, edgecolor='g', linewidth=2)
+    rect = plt.Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False, edgecolor='g', linewidth=2)
     ax[1].add_patch(rect)
     ax[1].imshow(img)
 
@@ -44,16 +45,22 @@ def visualize_output(images, targets, outputs, threshold=0.1):
 
 
 if __name__ == '__main__':
-    dataset, dataloader = createDataLoader()
-    images, targets = next(iter(dataloader))
-    mean, std = dataloader.dataset.mean[:7], dataloader.dataset.std[:7]
-    model = MaskRCNN(7, 5, mean, std)
+    base_path = pathlib.Path(__file__).parent.absolute()
+    coco_path = base_path.joinpath('COCO_TEST')
+    channels = [0, 1, 2, 5, 9]
 
-    model.load_state_dict(torch.load("model_blender_5epoch_small32ds_nopretrain.pth"))
+    train_dataloader, val_dataloader, stats = createDataLoader(coco_path, bs=1, num_workers=0, channels=channels)
+    mean, std = stats
+    mean, std = mean[channels], std[channels]
+
+    model = MaskRCNN(5, 5, mean, std)
     model.cuda()
     model.eval()
 
+    checkpoint = torch.load("RCNN_TM_18.pth")
+    model.load_state_dict(checkpoint['model_state_dict'])
 
+    images, targets = next(iter(val_dataloader))
 
     images = images.cuda().float()
 

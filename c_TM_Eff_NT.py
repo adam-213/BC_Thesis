@@ -18,22 +18,25 @@ class PoseEstimationModel(nn.Module):
 
         self.rotloss = RotationLoss()
 
-        self.backbone = timm.create_model("efficientnetv2_rw_m", pretrained=True, in_chans=num_channels)
+        self.backbone = timm.create_model("efficientnetv2_rw_s", pretrained=True, in_chans=num_channels)
         self.backbone.classifier = nn.Identity()
 
         self.translation_head = nn.Sequential(
-            nn.Linear(self.backbone.num_features, 1024),
+            nn.Linear(self.backbone.num_features, 2048),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(2048, 1024),
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(1024, 3)
         )
 
         self.rotation_head = nn.Sequential(
-            nn.Linear(self.backbone.num_features, 1024),
-            nn.GroupNorm(1, 1024),
+            nn.Linear(self.backbone.num_features, 2048),
+            nn.GroupNorm(1, 2048),
             nn.ReLU(),
             nn.Dropout(0.5),
-            nn.Linear(1024, 1024),
+            nn.Linear(2048, 1024),
             nn.GroupNorm(1, 1024),
             nn.ReLU(),
             nn.Dropout(0.5),
@@ -41,7 +44,11 @@ class PoseEstimationModel(nn.Module):
             nn.GroupNorm(1, 512),
             nn.ReLU(),
             nn.Dropout(0.5),
-            nn.Linear(512, 3)
+            nn.Linear(512, 256),
+            nn.GroupNorm(1, 256),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(256, 3)
         )
 
         self.rotation_head.apply(_init_layer)
@@ -54,17 +61,35 @@ class PoseEstimationModel(nn.Module):
         return translation, rotation
 
     def loss(self, hat_move, hat_rot, gt_move, gt_rot, labelname):
-        move_loss = nn.MSELoss()(hat_move, gt_move)
+        wx = 1
+        wy = 1
+        wz = 1
 
-        # compute the geodesic loss between the predicted and target axis angle with dissregard for z axis
-        # i can think of a case where this would be a problem, but it is quite specific and won't happen in this dataset
-        # somethign like box being |  |  and part being oriented like |/| |  so the grabable side would be againts a wall
-        # but i don't think the robot could handle that even if predicted correctly
+        zhat = hat_move[:, 2] - 750
+        zgt = gt_move[:, 2] - 750
+
+        x_loss = nn.MSELoss()(hat_move[:, 0], gt_move[:, 0])
+        y_loss = nn.MSELoss()(hat_move[:, 1], gt_move[:, 1])
+        z_loss = nn.MSELoss()(zhat, zgt)
+
+        move_loss = wx * x_loss + wy * y_loss + wz * z_loss
 
         # account for the symmetry of the objects, requires domain knowledge
         rot_loss = self.rotloss(hat_rot, gt_rot, labelname)
 
-        return move_loss, rot_loss
+        if random.random() < 0.01:
+            print("x_loss: ", x_loss)
+            print("y_loss: ", y_loss)
+            print("z_loss: ", z_loss)
+            print("rot_loss: ", rot_loss)
+
+            print("hat_move: ", hat_move)
+            print("gt_move: ", gt_move)
+            print("hat_rot: ", hat_rot)
+            print("gt_rot: ", gt_rot)
+            print("labelname: ", labelname)
+
+        return move_loss, rot_loss * 200000
 
 
 class RotationLoss():
@@ -80,7 +105,7 @@ class RotationLoss():
         elif "bin" in labelname.lower():
             return torch.zeros(1)
         elif "part_" in labelname.lower():
-            return self.part_handler(labelname, hat_rot, gt_rot) * 50000
+            return self.part_handler(labelname, hat_rot, gt_rot)
 
     def part_handler(self, labelname, hat_rot, gt_rot):
         if labelname == "part_thruster":
