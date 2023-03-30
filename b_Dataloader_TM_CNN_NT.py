@@ -87,39 +87,78 @@ def prepare_masks(target):
         # plt.show()
 
     # Pad masks to all be the same size, needed for torch to stack them
-    inst_masks = torch.nn.utils.rnn.pad_sequence(inst_masks, batch_first=True, padding_value=0)
+    try:
+        inst_masks = torch.nn.utils.rnn.pad_sequence(inst_masks, batch_first=True, padding_value=0)
+    except RuntimeError as e:
+        print("Error: ", e)
+        print("inst_masks: ", inst_masks)
+        raise e
+
 
     inst_masks = inst_masks.type(torch.bool)  # binary masks
 
     return inst_masks, inst_labels
 
 
+def prepare_transforms(target):
+    # Extract transformation matrices from target
+    inst_transforms = [torch.tensor(inst['transform']) for inst in target]
+    # turn them into np arrays, so we can reshape them correctly
+    inst_transforms = [np.array(inst_transform) for inst_transform in inst_transforms]
+    # Order F because the matrices are in column major order (mathematicians ...)
+    inst_transforms = [i.reshape((4, 4), order='F') for i in inst_transforms]
+    # Extract rotation and translation
+    inst_rotations = [inst_transform[:3, :3] for inst_transform in inst_transforms]
+    # Extract translation - not actualy needed as target will use analytical methods from the predicted masks + lookup of depth
+    inst_translations = [inst_transform[:3, 3] for inst_transform in inst_transforms]
+    # turn them into torch tensors
+    inst_rotations = [torch.from_numpy(inst_rotation).type(torch.float32) for inst_rotation in inst_rotations]
+    inst_translations = [torch.from_numpy(inst_translation).type(torch.float32) for inst_translation in
+                         inst_translations]
+    # stack them into a single tensor - (N, 3, 3) dtype: torch.float32, N: number of instances (variable)
+    inst_rotations = torch.stack(inst_rotations, dim=0)
+    # stack them into a single tensor - (N, 3) dtype: torch.float32, N: number of instances (variable)
+    inst_translations = torch.stack(inst_translations, dim=0)
+
+    # now, the thinking goes like this:
+    # Since the matrices are aligned on the axis with the infinite rotational symetry (Z axis)
+    # We know that the rotation in the matrix will be aligned with the rotational symetry axis
+    # So we can turn this problem into predicting the changed Z axis, in effect the change in coordinate system
+    # This should basically dissregard the rotational symetry therefore symplifying the problem drastically
+    # this line can be defined as point slope form with xyz being predicted / calculated from the mask
+    # and the point being the center of mass of the mask
+    # and slopes being predicted by the network
+
+    return inst_rotations, inst_translations
+
+
 def prepare_targets(targets) -> list:
     prepared_targets = []
     for target in targets:
+        target = target[2:]
+        if len(target) == 0:
+            prepared_targets.append(None)
+            continue
         prepared_target = {}
         # Masks and mask labels
         inst_masks, inst_labels = prepare_masks(target)
+        # Transformations
+        inst_rot, inst_move = prepare_transforms(target)
 
-        # Transformation Matrices
-        inst_transforms = [torch.tensor(inst['transform']) for inst in target]
-        # turn them into np arrays
-        inst_transforms = [np.array(inst_transform) for inst_transform in inst_transforms]
-        inst_transforms = [i.reshape((4, 4), order='F') for i in inst_transforms]
-        inst_transforms = [torch.from_numpy(inst_transform) for inst_transform in inst_transforms]
-        inst_transforms = torch.stack(inst_transforms, dim=0)
-        inst_transforms = inst_transforms.type(torch.float32)
-
-        if torch.isnan(inst_transforms).any() or torch.isinf(inst_transforms).any():
-            print("Targets are nan or inf")
-            print(targets)
-            raise ValueError("Targets are nan or inf")
         # Store in dictionary
         prepared_target['masks'] = inst_masks.float()
-        prepared_target['tm'] = inst_transforms.float()
+        prepared_target['rot'] = inst_rot
+        prepared_target['move'] = inst_move
         # labels need to be int64, such overkill
         prepared_target['labels'] = torch.tensor(inst_labels, dtype=torch.int64)
         prepared_target['names'] = np.array([np.array(inst['name']) for inst in target])
+
+        bbox = [[inst['bbox'][0], inst['bbox'][1], inst['bbox'][0] + inst['bbox'][2],
+                 inst['bbox'][1] + inst['bbox'][3]] for inst in target]
+        # bbox = torch.cat(bbox, dim=0)
+        #
+        # bbox = bbox.type(torch.float32)
+        prepared_target['box'] = bbox
 
         prepared_targets.append(prepared_target)
 
@@ -127,62 +166,59 @@ def prepare_targets(targets) -> list:
     return prepared_targets
 
 
-def homog_to_trans_and_axis_angle(homog):
-    batchsize = homog.shape[0]
-    R = homog[:, :3, :3]
-    t = homog[:, :3, 3]
-    r = Rotation.from_matrix(R)
-    axis_angle = r.as_rotvec()
-    return t, torch.Tensor(axis_angle)
-
-
-def collate_TM_GT(batch, channels=None):
-    """Custom collate function to prepare data for the model"""
+def prepare_batch(batch):
     images, targets = zip(*batch)
 
     # Stack images on first dimension to get a tensor of shape (batch_size, C, H, W)
     batched_images = torch.stack(images, dim=0).permute(0, 3, 1, 2)
     del images
-    # Select channels to use
-    if channels:
-        batched_images = batched_images[:, channels, :, :]
 
     # Prepare targets
     prepared_targets = prepare_targets(targets)
-    del targets
+    tocut = []
+    for i in range(len(prepared_targets)):
+        tocut.append(False if prepared_targets[i] is None else True)
 
-    # Will need to turn image + instances into a microbatch but this is better done in the training loop
-    # because of vram limitations
+    batched_images = batched_images[tocut]
 
-    # strip the first 2 entries in everything - backround and bin - not needed possibly break stuff
-    masks = [prepared_target['masks'][2:] for prepared_target in prepared_targets]
+    prepared_targets = [target for target in prepared_targets if target is not None]
 
-    # Transform matrices into translation and axis angle rotation representation
-    tms = [prepared_target['tm'][2:] for prepared_target in prepared_targets]
+    return batched_images, prepared_targets
 
-    labels = [prepared_target['labels'][2:] for prepared_target in prepared_targets]
-    names = [prepared_target['names'][2:] for prepared_target in prepared_targets]
 
-    # check if the targets are empty
-    empty = []
-    for i in range(len(labels)):
-        if len(labels[i]) == 0:
-            empty.append(i)
-    # remove the empty targets
-    for i in sorted(empty, reverse=True):
-        del masks[i], tms[i], labels[i], names[i],
-        # tensor doesn't have a del function
-        # gotta do it like this
-        batched_images = torch.cat((batched_images[:i], batched_images[i + 1:]), 0)
+def collate_TM_GT(batch, channels=None):
+    """Custom collate function to prepare data for the model"""
+    images, targets = prepare_batch(batch)
 
-    masks, tms, labels, names = permute_microbatch(masks, tms, labels, names)
+    if channels:
+        images = images[:, channels, :, :]
+    moves = [target['move'] for target in targets]
+    # Get the Z translation for prediction as XY can be predicted from the mask
+    zs = [move[:, 2] for move in moves]
+    # zs = torch.stack(zs, dim=0)
+    # XY seems to be usable from the PREDICTED mask because it has scoring, from the GT mask its bit more difficult
+    # lets just use the TM gt for now
+    xys = [move[:, :2] for move in moves]
 
-    translation, axis_angle = zip(*[homog_to_trans_and_axis_angle(tm) for tm in tms])
+    # Get the masks
+    masks = [target['masks'] for target in targets]
+    # Pad masks to all be the same size, needed for torch to stack them
 
-    # scale the tranlation to -1, 1 range and substract 600 from z
+    # Get the names
+    names = [target['names'] for target in targets]
+    # get rotation matrices
+    rots = [target['rot'] for target in targets]
 
-    # Return batch as a tuple
-    return batched_images, masks, axis_angle, translation, names
+    # Extract the Z vector
+    z_vecs = [rot[:, 2, :] for rot in rots]
+
+    # change up the XY image to have the standard top left corner as origin
+    # instead of the center of the image
+    # this is needed for the crop to work correctly
+
+    boxes = [target['box'] for target in targets]
+
+    return images, masks, xys, zs, z_vecs, names, boxes
 
 
 def permute_microbatch(masks, tms, labels, names):

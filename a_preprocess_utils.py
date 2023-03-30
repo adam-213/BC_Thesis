@@ -150,7 +150,7 @@ def render(path, T):
     bpy.context.scene.render.simplify_subdivision_render = 1
 
     # save the image to the buffer
-    file = f'R:\\dummy{random.randint(10000, 12312312312)}.png'
+    file = f'E:\\dummy{random.randint(10000, 12312312312)}.png'
     bpy.context.scene.render.filepath = file
     bpy.context.scene.render.image_settings.file_format = 'PNG'
     bpy.ops.render.render(

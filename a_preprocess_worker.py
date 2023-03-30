@@ -121,9 +121,9 @@ class Preprocessor:
         inputs['normals'] = scan[7]
         inputs['intensities'] = scan[5]
 
-        # scale everything to 0-1
-        for key, value in inputs.items():
-            inputs[key] = scale(value)
+        # # scale everything to 0-1
+        # for key, value in inputs.items():
+        #     inputs[key] = scale(value)
 
         # get shapes for the coco json
         try:

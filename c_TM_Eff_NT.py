@@ -16,23 +16,24 @@ class PoseEstimationModel(nn.Module):
     def __init__(self, num_channels=7):
         super(PoseEstimationModel, self).__init__()
 
-        self.rotloss = RotationLoss()
+        self.Zloss = nn.MSELoss()
+        self.Wloss = nn.MSELoss()
 
         self.backbone = timm.create_model("efficientnetv2_rw_s", pretrained=True, in_chans=num_channels)
         self.backbone.classifier = nn.Identity()
 
-        self.translation_head = nn.Sequential(
+        self.Z_head = nn.Sequential(
             nn.Linear(self.backbone.num_features, 2048),
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(2048, 1024),
             nn.ReLU(),
             nn.Dropout(0.3),
-            nn.Linear(1024, 3)
+            nn.Linear(1024, 1)
         )
 
-        self.rotation_head = nn.Sequential(
-            nn.Linear(self.backbone.num_features, 2048),
+        self.W_head = nn.Sequential(
+            nn.Linear(self.backbone.num_features + 1, 2048),
             nn.GroupNorm(1, 2048),
             nn.ReLU(),
             nn.Dropout(0.5),
@@ -51,45 +52,32 @@ class PoseEstimationModel(nn.Module):
             nn.Linear(256, 3)
         )
 
-        self.rotation_head.apply(_init_layer)
-        self.translation_head.apply(_init_layer)
+        self.Z_head.apply(_init_layer)
+        self.W_head.apply(_init_layer)
 
-    def forward(self, x):
+    def forward_s1(self, x):
         features = self.backbone(x)
-        translation = self.translation_head(features)
-        rotation = self.rotation_head(features)
-        return translation, rotation
+        Z = self.Z_head(features)
+        return Z
 
-    def loss(self, hat_move, hat_rot, gt_move, gt_rot, labelname):
-        wx = 1
-        wy = 1
-        wz = 1
+    def forward_s2(self, x):
+        features = self.backbone(x)
+        Z = self.Z_head(features)
+        merged_features = torch.cat((features, Z), dim=1)
+        W = self.W_head(merged_features)
+        return W
 
-        zhat = hat_move[:, 2] - 750
-        zgt = gt_move[:, 2] - 750
+    def loss_Z(self, hat_Z, gt_Z):
+        return self.Zloss(hat_Z, gt_Z)
 
-        x_loss = nn.MSELoss()(hat_move[:, 0], gt_move[:, 0])
-        y_loss = nn.MSELoss()(hat_move[:, 1], gt_move[:, 1])
-        z_loss = nn.MSELoss()(zhat, zgt)
+    def loss_W(self, What, Wgt):
+        return self.Wloss(What, Wgt)
 
-        move_loss = wx * x_loss + wy * y_loss + wz * z_loss
-
-        # account for the symmetry of the objects, requires domain knowledge
-        rot_loss = self.rotloss(hat_rot, gt_rot, labelname)
-
-        if random.random() < 0.01:
-            print("x_loss: ", x_loss)
-            print("y_loss: ", y_loss)
-            print("z_loss: ", z_loss)
-            print("rot_loss: ", rot_loss)
-
-            print("hat_move: ", hat_move)
-            print("gt_move: ", gt_move)
-            print("hat_rot: ", hat_rot)
-            print("gt_rot: ", gt_rot)
-            print("labelname: ", labelname)
-
-        return move_loss, rot_loss * 200000
+    def forward(self, x, stage):
+        if stage == 1:
+            return self.forward_s1(x)
+        elif stage == 2:
+            return self.forward_s2(x)
 
 
 class RotationLoss():
