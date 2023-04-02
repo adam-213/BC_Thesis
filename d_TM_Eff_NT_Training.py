@@ -13,47 +13,6 @@ import numpy as np
 from b_Dataloader_TM_CNN_NT import createDataLoader
 from c_TM_Eff_NT import PoseEstimationModel
 
-# Set up the camera intrinsic parameters
-intrinsics = {
-    'fx': 1181.077335,
-    'fy': 1181.077335,
-    'cx': 516.0,
-    'cy': 386.0
-}
-
-
-def world_to_image_coords(world_coords, intrinsics):
-    fx, fy, cx, cy = intrinsics['fx'], intrinsics['fy'], intrinsics['cx'], intrinsics['cy']
-    X, Y, Z = world_coords
-
-    # Normalize the real-world coordinates
-    x = X / Z
-    y = Y / Z
-
-    # Apply the intrinsic parameters to convert to pixel coordinates
-    u = fx * x + cx
-    v = fy * y + cy
-
-    # Round to integer values
-    u, v = round(u), round(v)
-
-    return u, v
-
-
-def image_to_world_coords(image_coords, intrinsics, Z):
-    fx, fy, cx, cy = intrinsics['fx'], intrinsics['fy'], intrinsics['cx'], intrinsics['cy']
-    u, v = image_coords
-
-    # Convert pixel coordinates to normalized image coordinates
-    x = (u - cx) / fx
-    y = (v - cy) / fy
-
-    # Compute the real-world coordinates
-    X = x * Z
-    Y = y * Z
-
-    return X, Y, Z
-
 
 class Trainer:
     def __init__(self, model, train_dataloader, val_dataloader, optimizer, device, scaler, scheduler):
@@ -65,143 +24,143 @@ class Trainer:
         self.scaler = scaler
         self.scheduler = scheduler
 
-    def train_one_epoch(self, epoch, stage=1, checkpoint_path=None):
-        #
+    def train_one_epoch_stage_1(self, epoch):
         self.model.train()
-        total_loss_rot_list, total_loss_move_list = [], []
+        total_loss_list = []
 
-        for batch, (images, masks, xys, zs, z_vecs, names, bboxs) in enumerate(self.train_dataloader):
-            for idx, (image, mask, xy, z, z_vec, name, bbox) in enumerate(
-                    zip(images, masks, xys, zs, z_vecs, names, bboxs)):
-                # for each mask there is a xy, for this xy i want to predict z
-                # I want to crop them to reasonable size but since they are irelular i need to pad them
-                # So I want to find the biggest bbox do 1.1x and then say that is the crop size
-                # image * mask = masked image
-                # center crop the masked image according to the xys as the center
-                # since I have already calculated the rectangle size I can just use that and they will be the same size
-                # then I can just stack them and feed them into the network with the zs as the target
-                # this is the first stage of the training
+        for batch, (images_stacked_masked, z, z_vecs, names) in enumerate(self.train_dataloader):
+            if type(z) == type(None):
+                continue
+            self.optimizer.zero_grad()
 
-                # second stage, take the same images and crop them to the same size as the first stage
-                # then I can just stack them and feed them into the network with the z_vecs as the target
-                # but this time using the forward_s2 method instead of forward_s1
-                # this is the second stage of the training
+            images_stacked_masked = images_stacked_masked.to(self.device)
+            z = z.to(self.device)
 
-                # determine if the weights should be freezed or not, args against is that the backbone will be changing
-                # therefore the Z head won't have the same wiegghts as it had when S1 traing was done
-                # therefore it might drift away from the correct solution that it found in S1
+            # Checkpointing for memory efficiency
+            # Z = checkpoint(self.model.forward_s1, image_masks_stacked)
+            # loss = self.model.loss_Z(Z, zs)
+            # loss.bckward()
 
-                # potentialy i could freeze tha backbone and Z head and only train the W head however this will probably be worse
-                # in terms of accuracy since the backbone is the most important part of the network
+            # self.optimizer.step()
+            # self.optimizer.zero_grad()
 
-                # firs max the size of the bbox
-                box_areas = [(box[2] - box[0]) * (box[3] - box[1]) for box in bbox]
-                max_bbox = bbox[np.argmax(box_areas)]
-                # then add ~10% to each side correctly to expand the bbox
-                max_bbox_exp = [max_bbox[0] * 0.95, max_bbox[1] * 0.95, max_bbox[2] * 1.05, max_bbox[3] * 1.05]
-                # then convert to int
-                max_bbox_exp = [int(x) for x in max_bbox_exp]
+            # Mixed precision training for speeeeed
+            with autocast():
+                Z = self.model.forward_s1(images_stacked_masked)
+                loss = self.model.loss_Z(Z, z)
 
-                # stack the image to match number of masks
-                image = torch.stack([image for i in range(len(mask))])
-                image_masks = [img * msk for img, msk in zip(image, mask)]
-                # center crop the masked image according to the xys as the center
-                image_masks_cropped = []
-                w, h = max_bbox_exp[2] - max_bbox_exp[0], max_bbox_exp[3] - max_bbox_exp[1]
-                w, h = w // 2, h // 2
-                for j in range(len(image_masks)):
-                    img = image_masks[j]
-                    xyt = xy[j]
-                    zt = z[j].item()
-                    world_coords = (xyt[0], xyt[1], zt)
-                    world_coords = list(map(float, world_coords))
-                    # convert to image coordinates
-                    X, Y = world_to_image_coords(world_coords, intrinsics)
-                    # compute the crop coordinates
-                    x1, y1, x2, y2 = X - w, Y - h, X + w, Y + h
-                    x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-                    # pad the image with same amount (the image size is not the same as the bbox size)
-                    # total hack and could be more efficient
-                    img = np.pad(img, ((0, 0), (abs(min(0, y1)), max(0, y2 - img.shape[1])),
-                                       (abs(min(0, x1)), max(0, x2 - img.shape[2]))), "constant")
-                    # crop the image in the xy as the center with size of max_bbox_exp
-                    img = img[:, y1:y2, x1:x2]
-                    image_masks_cropped.append(img)
+            # Scale the gradients
+            self.scaler.scale(loss).backward()
+            # Update the optimizer with the combined gradients
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
 
-                # stack the images
-                image_masks_cropped = [torch.from_numpy(img) for img in image_masks_cropped]
-                image_masks_stacked = torch.stack(image_masks_cropped)
+            total_loss_list.append(loss.item())
 
-                # move to device
-                image_masks_stacked = image_masks_stacked.to(self.device)
-                z = z.to(self.device).unsqueeze(1)
+            print(f"Epoch {epoch} Batch {batch} Loss: {loss.item()}")
 
-                # turn on grad for input
-                image_masks_stacked.requires_grad_(True)
+        return total_loss_list
 
+    def val_one_epoch_stage_1(self, epoch):
+        self.model.eval()
+        total_val_loss_list = []
+
+        with torch.no_grad():
+            for batch, (images_stacked_masked, z, z_vecs, names) in enumerate(self.val_dataloader):
+                if type(z) == type(None):
+                    continue
+                images_stacked_masked = images_stacked_masked.to(self.device)
+                z = z.to(self.device)
+
+                # Mixed precision validation
+                with autocast():
+                    Z = self.model.forward_s1(images_stacked_masked)
+                    val_loss = self.model.loss_Z(Z, z)
+
+                total_val_loss_list.append(val_loss.item())
+
+                print(f"Validation Epoch {epoch} Batch {batch} Loss: {val_loss.item()}")
+
+        return total_val_loss_list
+
+    def train_one_epoch_stage_2(self, epoch):
+        self.model.train()
+        total_loss_list = []
+        for batch, (images_stacked_masked, z, z_vecs, names, XYZs) in enumerate(self.train_dataloader):
+            if type(z) == type(None):
+                continue
+            self.optimizer.zero_grad()
+            z = z.to(self.device)
+            images_stacked_masked = images_stacked_masked.to(self.device)
+            z_vecs = z_vecs.to(self.device)
+            XYZs = XYZs.to(self.device)
+
+            # Mixed precision training for speeeeed
+            weights = self.model.forward_s2(images_stacked_masked, XYZs)
+            loss = self.model.loss_W(weights, z_vecs)
+
+            # Scale the gradients
+            self.scaler.scale(loss).backward()
+            # Update the optimizer with the combined gradients
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            self.scheduler.step()
+
+            total_loss_list.append(loss.item())
+
+            print(f"Epoch {epoch} Batch {batch} Loss: {loss.item()}")
+
+        return total_loss_list
+
+    def val_one_epoch_stage_2(self, epoch):
+        self.model.eval()
+        total_val_loss_list = []
+
+        with torch.no_grad():
+            for batch, (images_stacked_masked, z, z_vecs, names, XYZs) in enumerate(self.val_dataloader):
+                if type(z) == type(None):
+                    continue
                 self.optimizer.zero_grad()
-
-                # Checkpointing for memory efficiency
-                # Z = checkpoint(self.model.forward_s1, image_masks_stacked)
-                # loss = self.model.loss_Z(Z, zs)
-                # loss.bckward()
-
-                # self.optimizer.step()
-                # self.optimizer.zero_grad()
+                z = z.to(self.device)
+                images_stacked_masked = images_stacked_masked.to(self.device)
+                z_vecs = z_vecs.to(self.device)
+                XYZs = XYZs.to(self.device)
 
                 # Mixed precision training for speeeeed
                 with autocast():
-                    Z = self.model.forward_s1(image_masks_stacked)
-                    loss = self.model.loss_Z(Z, z)
+                    weights = self.model.forward_s2(images_stacked_masked, XYZs)
+                    val_loss = self.model.loss_W(weights, z_vecs)
 
-                # Scale the gradients
-                self.scaler.scale(loss).backward()
-                # Update the optimizer with the combined gradients
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
+                total_val_loss_list.append(val_loss.item())
 
+                print(f"Validation Epoch {epoch} Batch {batch} Loss: {val_loss.item()}")
 
-                total_loss_rot_list.append(loss.item())
-                total_loss_move_list.append(loss.item())
+        return total_val_loss_list
 
-                print(f"Epoch {epoch} Batch {batch} Loss: {loss.item()}")
-
-
-
-                if batch % 10 == 0 and batch != 0:
-                    self.scheduler.step()
-                fig, ax = plt.subplots(figsize=(10, 5))
-                ax.plot(total_loss_move_list, label="Move Loss")
-                ax.plot(total_loss_rot_list, label="Rot Loss")
-                ax.legend()
-                ax.set_title("Loss")
-                plt.savefig(f"losses_{epoch}_{batch}.png")
-                plt.close()
-
-                if batch % 100 == 0 and batch != 0:
-                    torch.save({
-                        'epoch': epoch,
-                        'model_state_dict': self.model.state_dict(),
-                        'optimizer_state_dict': self.optimizer.state_dict(),
-                        'scaler_state_dict': self.scaler.state_dict(),
-                    }, checkpoint_path.format(epoch, batch))
-
-        return total_loss_move_list, total_loss_rot_list
-
-    def train(self, num_epochs, checkpoint_path=None):
-        train_losses_move, train_losses_rot = [], []
-        val_losses_move, val_losses_rot = [], []
-
+    def train(self, num_epochs, stage=1, checkpoint_path=None):
         for epoch in range(num_epochs):
-            train_loss_move, train_loss_rot = self.train_one_epoch(epoch, checkpoint_path=checkpoint_path)
-            train_losses_move.append(train_loss_move)
-            train_losses_rot.append(train_loss_rot)
+            stage1_train_losses, stage1_val_losses = [], []
+            stage2_train_losses, stage2_val_losses = [], []
+            if stage == 1:
+                s1_loss = self.train_one_epoch_stage_1(epoch)
+                stage1_train_losses.append(s1_loss)
 
-            val_loss_move, val_loss_rot = self.validate_one_epoch(epoch)
-            val_losses_move.append(val_loss_move)
-            val_losses_rot.append(val_loss_rot)
+                s1_loss_val = self.val_one_epoch_stage_1(epoch)
+                stage1_val_losses.append(s1_loss_val)
 
-            self.plot_losses(train_losses_move, train_losses_rot, val_losses_move, val_losses_rot)
+                self.plot_losses(stage1_train_losses, stage1_val_losses, stage=1, epoch=epoch)
+
+                self.scheduler.step(np.mean(stage1_val_losses))
+
+            elif stage == 2:
+                s2_loss = self.train_one_epoch_stage_2(epoch)
+                stage2_train_losses.append(s2_loss)
+
+                s2_loss_val = self.val_one_epoch_stage_2(epoch)
+                stage2_val_losses.append(s2_loss_val)
+
+                self.plot_losses(stage2_train_losses, stage2_val_losses, stage=2, epoch=epoch)
+
 
             # Save the checkpoint
             if checkpoint_path:
@@ -210,165 +169,136 @@ class Trainer:
                     'model_state_dict': self.model.state_dict(),
                     'optimizer_state_dict': self.optimizer.state_dict(),
                     'scaler_state_dict': self.scaler.state_dict(),
-                    'train_losses_move': train_losses_move,
-                    'train_losses_rot': train_losses_rot,
-                    'val_losses_move': val_losses_move,
-                    'val_losses_rot': val_losses_rot,
-                }, checkpoint_path.format(epoch, "full"))
+                    'scheduler_state_dict': self.scheduler.state_dict(),
+                }, checkpoint_path.format(epoch, f"stage{stage}"))
 
-    def validate_one_epoch(self, epoch, splits=16):
+    def plot_losses(self, train_losses, val_losses, stage=1, epoch=0):
+        train_losses = np.array(train_losses).flatten()
+        val_losses = np.array(val_losses).flatten()
+        fig, ax = plt.subplots(figsize=(10, 5))
+
+        train_loss_len = len(train_losses)  # Calculate the offset for the validation loss curve
+        val_loss_x = np.arange(train_loss_len, train_loss_len + len(val_losses))  # Add the offset to the x values
+
+        ax.plot(train_losses, label="Train")
+        ax.plot(val_loss_x, val_losses, label="Validation")  # Use the shifted x values for the validation loss curve
+        ax.set_title(f"Stage {stage} Epoch {epoch} Losses")
+        ax.set_xlabel("Batch")
+        ax.set_ylabel("Loss")
+        ax.legend()
+        plt.savefig(f"stage{stage}_{epoch}_losses.png")
+
+    def infer_s1_driver(self, dataloder):
         self.model.eval()
-        total_val_loss_rot_list, total_val_loss_move_list = [], []
-
         with torch.no_grad():
-            for i, (images, masks, rot, move, names) in enumerate(self.val_dataloader):
-                for idx, image in enumerate(images):
-                    try:
-                        slicessize = max(1, masks[idx].shape[0] // splits)
-                    except:
-                        print(masks[idx].shape)
-                        slicessize = 1
-                    for slicenum, slice in enumerate(range(0, masks[idx].shape[0], slicessize)):
-                        # Cut the microbatch
-                        minimasks = masks[idx][slice:slice + slicessize]
-                        minirot = rot[idx][slice:slice + slicessize]
-                        minimove = move[idx][slice:slice + slicessize]
-                        mininames = names[idx][slice:slice + slicessize]
-                        # remove the first dimension
-                        minimasks.squeeze_(0)
-                        minirot.squeeze_(0)
-                        minimove.squeeze_(0)
+            for batch, (images_stacked_masked, z, z_vecs, names) in enumerate(dataloder):
+                if type(z) == type(None):
+                    continue
+                images_stacked_masked = images_stacked_masked.to(self.device)
+                z = z.to(self.device)
 
-                        # stack the image to the same size as the masks
-                        if len(minimasks.shape) != 3:
-                            # Workaround in case the microbatch size is 1
-                            minimasks = minimasks.unsqueeze(0)
-                            minirot = minirot.unsqueeze(0)
-                            minimove = minimove.unsqueeze(0)
+                # Mixed precision validation
+                Z = self.model.forward_s1(images_stacked_masked)
+                val_loss = self.model.loss_Z(Z, z)
 
-                        # copy the image to match the microbatch size
-                        image_stacked = torch.stack([image] * minimasks.shape[0])
-                        # stack minimasks to the image as a channel
-                        # image_masks_stacked = torch.cat((image_stacked, minimasks.unsqueeze(1)), dim=1)
-                        images_rgb, images_aux = image_stacked[:, :3], image_stacked[:, 3:]
-                        images_rgb_masked = torch.cat((images_rgb, minimasks.unsqueeze(1)), dim=1)
-                        images_aux_masked = images_aux * minimasks.unsqueeze(1)
-                        del image_stacked, images_rgb, images_aux
+                # print raw outputs for comparison side by side
+                for hat, gt in zip(Z, z):
+                    print(hat.item(), gt.item())
+                print(val_loss)
+                break
 
-                        image_masks_stacked = torch.cat((images_rgb_masked, images_aux_masked), dim=1)
-                        del images_rgb_masked, images_aux_masked
-                        # move to device
-                        image_masks_stacked = image_masks_stacked.to(self.device)
-                        minirot = minirot.to(self.device)
-                        minimove = minimove.to(self.device)
-                        # mininames = mininames.to(self.device)
-
-                        # turn on grad for input
-                        image_masks_stacked.requires_grad_(True)
-
-                        self.optimizer.zero_grad()
-
-                        # with autocast():
-                        movehat, rothat = checkpoint(self.model, image_masks_stacked)
-                        loss_move, loss_rot = self.model.loss(movehat, rothat, minimove, minirot, mininames)
-                        loss_move_mean, loss_rot_mean = loss_move.mean(), loss_rot.mean()
-                        # Compute the gradients for each loss separately
-                        del loss_move, loss_rot, image_masks_stacked, minimasks, minirot, minimove
-                total_val_loss_rot_list.append(loss_rot_mean.item())
-                total_val_loss_move_list.append(loss_move_mean.item())
-
-        avg_val_loss_rot = np.mean(total_val_loss_rot_list)
-        avg_val_loss_move = np.mean(total_val_loss_move_list)
-        return avg_val_loss_move, avg_val_loss_rot
-
-    def plot_losses(self, train_losses_move, train_losses_rot, val_losses_move, val_losses_rot):
-        clear_output(wait=True)
-        plt.figure(figsize=(20, 10))
-
-        plt.subplot(1, 2, 1)
-        plt.plot(train_losses_move, label="Train Move Loss")
-        plt.plot(val_losses_move, label="Validation Move Loss")
-        plt.xlabel("Epoch")
-        plt.ylabel("Loss")
-        plt.legend()
-
-        plt.subplot(1, 2, 2)
-        plt.plot(train_losses_rot, label="Train Rot Loss")
-        plt.plot(val_losses_rot, label="Validation Rot Loss")
-        plt.xlabel("Epoch")
-        plt.ylabel("Loss")
-        plt.legend()
-
-        plt.show()
-
-    def inference_bactch(self, epoch, batchsize=1, checkpoint_path=None):
-        #
+    def infer_s2_driver(self, dataloader):
         self.model.eval()
-        total_loss_rot_list, total_loss_move_list = [], []
+        with torch.no_grad():
+            for batch, (images_stacked_masked, z, z_vecs, names) in enumerate(dataloader):
+                if type(z) == type(None):
+                    continue
+                images_stacked_masked = images_stacked_masked.to(self.device)
+                z = z.to(self.device)
+                z_vecs = z_vecs.to(self.device)
 
-        for i, (images, masks, rot, move, names) in enumerate(self.train_dataloader):
-            for idx, image in enumerate(images):
-                for slicenum, sliceidx in enumerate(range(0, masks[idx].shape[0], batchsize)):
-                    slicesize = min(batchsize, masks[idx].shape[0] - batchsize * slicenum)
-                    # Cut the microbatch
-                    minimasks = masks[idx][sliceidx:sliceidx + slicesize]
-                    minirot = rot[idx][sliceidx:sliceidx + slicesize]
-                    minimove = move[idx][sliceidx:sliceidx + slicesize]
-                    mininames = names[idx][sliceidx:sliceidx + slicesize]
-                    # remove the first dimension
-                    minimasks.squeeze_(0)
-                    minirot.squeeze_(0)
-                    minimove.squeeze_(0)
+                # Mixed precision validation
+                weights, Z = self.model.forward_s2(images_stacked_masked)
+                val_loss = self.model.loss_W(weights, Z, z_vecs, z)
+                print(val_loss)
+                break
 
-                    # stack the image to the same size as the masks
-                    if len(minimasks.shape) != 3:
-                        # Workaround in case the microbatch size is 1
-                        minimasks = minimasks.unsqueeze(0)
-                        minirot = minirot.unsqueeze(0)
-                        minimove = minimove.unsqueeze(0)
-
-                    # copy the image to match the microbatch size
-                    image_stacked = torch.stack([image] * minimasks.shape[0])
-                    # stack minimasks to the image as a channel
-                    # image_masks_stacked = torch.cat((image_stacked, minimasks.unsqueeze(1)), dim=1)
-                    images_rgb, images_aux = image_stacked[:, :3], image_stacked[:, 3:]
-                    images_rgb_masked = torch.cat((images_rgb, minimasks.unsqueeze(1)), dim=1)
-                    images_aux_masked = images_aux * minimasks.unsqueeze(1)
-                    del image_stacked, images_rgb, images_aux
-
-                    image_masks_stacked = torch.cat((images_rgb_masked, images_aux_masked), dim=1)
-                    del images_rgb_masked, images_aux_masked
-                    # move to device
-                    image_masks_stacked = image_masks_stacked.to(self.device)
-                    minirot = minirot.to(self.device)
-                    minimove = minimove.to(self.device)
-                    # mininames = mininames.to(self.device)
-
-                    # with autocast():
-                    movehat, rothat = self.model(image_masks_stacked)
-                    loss_move, loss_rot = self.model.loss(movehat, rothat, minimove, minirot, mininames)
-                    loss_move_mean, loss_rot_mean = loss_move.mean(), loss_rot.mean()
-                    np.set_printoptions(suppress=True, precision=5)
-                    print("Pred", "Move", movehat.detach().cpu().numpy(), "Rot", rothat.detach().cpu().numpy())
-                    print("GT", "Move", minimove.detach().cpu().numpy(), "Rot", minirot.detach().cpu().numpy())
-                    print("Loss", "Move", loss_move_mean.item(), "Rot", loss_rot_mean.item())
-
-            break
-
-    def load_checkpoint(self, checkpoint_path):
-        checkpoint = torch.load(checkpoint_path)
-        self.model.load_state_dict(checkpoint['model_state_dict'])
+    def load_checkpoint(self, path):
+        checkpoint = torch.load(path)
+        #state_dict = {k: v for k, v in checkpoint['model_state_dict'].items() if 'W_head' not in k}
+        state_dict = checkpoint['model_state_dict']
+        self.model.load_state_dict(state_dict, strict=False)
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
+        self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        epoch = checkpoint['epoch']
+        return epoch
 
 
-def main():
+def s1_train():
     # Modify these lines to use your custom dataloader
+    base_path = pathlib.Path(__file__).parent.absolute()
+    coco_path = base_path.joinpath('COCO_TEST')
+    channels = [1, 3, 4, 5]
+
+    train_dataloader, val_dataloader = createDataLoader(coco_path, batchsize=2, channels=channels, num_workers=3,
+                                                        shuffle=True)
+
+    model = PoseEstimationModel(len(channels))
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=0.0001)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+
+    scaler = GradScaler()
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=1, verbose=True,
+                                                           min_lr=0.000001)
+
+    trainer = Trainer(model, train_dataloader, val_dataloader, optimizer, device, scaler, scheduler)
+    num_epochs = 20
+    save_path = "pose_estimation_model_M_{}_{}.pth"
+    trainer.train(num_epochs, checkpoint_path=save_path)
+
+
+def s2_train():
+    # Modify these lines to use your custom dataloader
+    base_path = pathlib.Path(__file__).parent.absolute()
+    coco_path = base_path.joinpath('COCO_TEST')
+    channels = [0, 1, 2, 5, 9]
+
+    train_dataloader, val_dataloader = createDataLoader(coco_path, batchsize=2, channels=channels, num_workers=3,
+                                                        shuffle=True)
+
+    model = PoseEstimationModel(len(channels))
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01, weight_decay=0.0001)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    num_epochs = 2
+    scaler = GradScaler()
+    max_lr = 0.025
+    total_steps = num_epochs * len(train_dataloader)
+    pct_start = 0.33  # Percentage of steps for the increasing phase
+    anneal_strategy = 'cos'  # Can be 'linear' or 'cos'
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr, total_steps=total_steps,
+                                                    pct_start=pct_start, anneal_strategy=anneal_strategy,
+                                                    cycle_momentum=True, base_momentum=0.75, max_momentum=0.95)
+
+    trainer = Trainer(model, train_dataloader, val_dataloader, optimizer, device, scaler, scheduler)
+    #trainer.load_checkpoint("pose_estimation_model_M_19_stage1_0_stage2_2.pth")
+    #trainer.scheduler.pct_start = 0.1
+
+    save_path = "pose_estimation_model_M_stage2only_{}_{}.pth"
+
+    trainer.train(num_epochs, checkpoint_path=save_path, stage=2)
+
+
+def inference():
     base_path = pathlib.Path(__file__).parent.absolute()
     coco_path = base_path.joinpath('COCO_TEST')
     channels = [0, 1, 2, 3, 4, 5]
 
-    train_dataloader, val_dataloader = createDataLoader(coco_path, batchsize=4, channels=channels, num_workers=3,
+    train_dataloader, val_dataloader = createDataLoader(coco_path, batchsize=2, channels=channels, num_workers=3,
                                                         shuffle=True)
 
     model = PoseEstimationModel(len(channels))
@@ -378,37 +308,16 @@ def main():
     model.to(device)
 
     scaler = GradScaler()
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.95)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=1, verbose=True,
+                                                           min_lr=0.000001)
 
     trainer = Trainer(model, train_dataloader, val_dataloader, optimizer, device, scaler, scheduler)
-    num_epochs = 50
-    save_path = "pose_estimation_model_{}_{}.pth"
-    trainer.train(num_epochs, checkpoint_path=save_path)
+    trainer.load_checkpoint("pose_estimation_model_49_stage1.pth")
 
-
-def inference():
-    # Modify these lines to use your custom dataloader
-    base_path = pathlib.Path(__file__).parent.absolute()
-    coco_path = base_path.joinpath('COCO_TEST')
-    channels = [0, 1, 2, 5]
-
-    train_dataloader, val_dataloader = createDataLoader(coco_path, batchsize=1, channels=channels, num_workers=3,
-                                                        shuffle=True)
-
-    model = PoseEstimationModel(len(channels) + 1)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=0.0001)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
-
-    scaler = GradScaler()
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.95)
-
-    trainer = Trainer(model, train_dataloader, val_dataloader, optimizer, device, scaler, scheduler)
-    # trainer.load_checkpoint("pose_estimation_model_0_full.pth")
-    trainer.inference_bactch(1, batchsize=1, checkpoint_path="pose_estimation_model_{}_{}.pth")
+    trainer.infer_s1_driver(val_dataloader)
 
 
 if __name__ == '__main__':
-    main()
+    # s1_train()
+    s2_train()
     # inference()

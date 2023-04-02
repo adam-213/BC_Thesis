@@ -62,6 +62,48 @@ def scale(image):
     return image
 
 
+# Set up the camera intrinsic parameters
+intrinsics = {
+    'fx': 1181.077335,
+    'fy': 1181.077335,
+    'cx': 516.0,
+    'cy': 386.0
+}
+
+
+def world_to_image_coords(world_coords, intrinsics):
+    fx, fy, cx, cy = intrinsics['fx'], intrinsics['fy'], intrinsics['cx'], intrinsics['cy']
+    X, Y, Z = world_coords
+
+    # Normalize the real-world coordinates
+    x = X / Z
+    y = Y / Z
+
+    # Apply the intrinsic parameters to convert to pixel coordinates
+    u = fx * x + cx
+    v = fy * y + cy
+
+    # Round to integer values
+    u, v = round(u), round(v)
+
+    return u, v
+
+
+def image_to_world_coords(image_coords, intrinsics, Z):
+    fx, fy, cx, cy = intrinsics['fx'], intrinsics['fy'], intrinsics['cx'], intrinsics['cy']
+    u, v = image_coords
+
+    # Convert pixel coordinates to normalized image coordinates
+    x = (u - cx) / fx
+    y = (v - cy) / fy
+
+    # Compute the real-world coordinates
+    X = x * Z
+    Y = y * Z
+
+    return X, Y, Z
+
+
 def prepare_masks(target):
     # Masks
     inst_masks = []
@@ -93,7 +135,6 @@ def prepare_masks(target):
         print("Error: ", e)
         print("inst_masks: ", inst_masks)
         raise e
-
 
     inst_masks = inst_masks.type(torch.bool)  # binary masks
 
@@ -189,7 +230,8 @@ def prepare_batch(batch):
 def collate_TM_GT(batch, channels=None):
     """Custom collate function to prepare data for the model"""
     images, targets = prepare_batch(batch)
-
+    if not targets:
+        return None, None, None, None, None
     if channels:
         images = images[:, channels, :, :]
     moves = [target['move'] for target in targets]
@@ -218,20 +260,142 @@ def collate_TM_GT(batch, channels=None):
 
     boxes = [target['box'] for target in targets]
 
-    return images, masks, xys, zs, z_vecs, names, boxes
+    images_stacked_masked = []
+    zs_stacked = []
+    z_vecs_stacked = []
+    XYZs_stacked = []
+
+    # flatten and get the max area box
+    all_boxes = []
+    for box in boxes:
+        all_boxes.extend(box)
+    boxes = np.array(all_boxes)
+    box_areas = [(box[2] - box[0]) * (box[3] - box[1]) for box in boxes]
+    # get the coordinates of the box with the max area
+    max_bbox = boxes[np.argmax(box_areas)]
+
+    # then add ~10% to each side correctly to expand the bbox
+    max_bbox_exp = [max_bbox[0] * 0.95, max_bbox[1] * 0.95, max_bbox[2] * 1.05, max_bbox[3] * 1.05]
+    # then convert to int
+    max_bbox_exp = [int(x) for x in max_bbox_exp]
+
+    for idx, (image, mask, xy, z, z_vec, name, bbox) in enumerate(
+            zip(images, masks, xys, zs, z_vecs, names, boxes)):
+        # for each mask there is a xy, for this xy i want to predict z
+        # I want to crop them to reasonable size but since they are irelular i need to pad them
+        # So I want to find the biggest bbox do 1.1x and then say that is the crop size
+        # image * mask = masked image
+        # center crop the masked image according to the xys as the center
+        # since I have already calculated the rectangle size I can just use that and they will be the same size
+        # then I can just stack them and feed them into the network with the zs as the target
+        # this is the first stage of the training
+
+        # second stage, take the same images and crop them to the same size as the first stage
+        # then I can just stack them and feed them into the network with the z_vecs as the target
+        # but this time using the forward_s2 method instead of forward_s1
+        # this is the second stage of the training
+
+        # determine if the weights should be freezed or not, args against is that the backbone will be changing
+        # therefore the Z head won't have the same wiegghts as it had when S1 traing was done
+        # therefore it might drift away from the correct solution that it found in S1
+
+        # potentialy i could freeze tha backbone and Z head and only train the W head however this will probably be worse
+        # in terms of accuracy since the backbone is the most important part of the network
+
+        # firs max the size of the bbox
+
+        # stack the image to match number of masks
+        image = torch.stack([image for i in range(len(mask))])
+        image_masks = [img * msk for img, msk in zip(image, mask)]
+        # center crop the masked image according to the xys as the center
+        image_masks_cropped = []
+        XYZs = []
+        w, h = max_bbox_exp[2] - max_bbox_exp[0], max_bbox_exp[3] - max_bbox_exp[1]
+        w, h = w // 2, h // 2
+        for j in range(len(image_masks)):
+            img = image_masks[j]
+            xyt = xy[j]
+            zt = z[j].item()
+            world_coords = (xyt[0], xyt[1], zt)
+            world_coords = list(map(float, world_coords))
+            # convert to image coordinates
+            X, Y = world_to_image_coords(world_coords, intrinsics)
+            XYZ = np.array([X, Y, zt])
+            XYZs.append(XYZ)
+            # compute the crop coordinates
+            x1, y1, x2, y2 = X - w, Y - h, X + w, Y + h
+            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+            # pad the image with same amount (the image size is not the same as the bbox size)
+            # total hack and could be more efficient
+            img = np.pad(img, ((0, 0), (abs(min(0, y1)), max(0, y2 - img.shape[1])),
+                               (abs(min(0, x1)), max(0, x2 - img.shape[2]))), "constant")
+            # crop the image in the xy as the center with size of max_bbox_exp
+            img = img[:, y1:y2, x1:x2]
+            image_masks_cropped.append(img)
+
+        # stack the images
+        image_masks_cropped = [torch.from_numpy(img) for img in image_masks_cropped]
+        image_masks_stacked = torch.stack(image_masks_cropped)
+
+        z = z.unsqueeze(1)
+        zs_stacked.append(z)
+
+        # z_vec = z_vec.unsqueeze(0)
+        z_vecs_stacked.append(z_vec)
+
+        # add the images to the list
+        images_stacked_masked.append(image_masks_stacked)
+
+        XYZs = np.array(XYZs)
+        XYZs_stacked.append(XYZs)
+
+    # stack the images
+    images_stacked_masked = torch.cat(images_stacked_masked, dim=0)
+    # stack the zs
+    zs_stacked = torch.cat(zs_stacked, dim=0)
+    # stack the z_vecs
+    z_vecs_stacked = torch.cat(z_vecs_stacked, dim=0)
+    # flatten the names
+    names = [item for sublist in names for item in sublist]
+    # stack the XYZs to tensor
+    XYZs_stacked = np.concatenate(XYZs_stacked, axis=0)
+    XYZs_stacked = torch.from_numpy(XYZs_stacked)
+    images_stacked_masked, zs_stacked, z_vecs_stacked, names, XYZs_stacked = permute_microbatch(images_stacked_masked,
+                                                                                                zs_stacked,
+                                                                                                z_vecs_stacked,
+                                                                                                names, XYZs_stacked)
+    magnitude = torch.sqrt(torch.sum(z_vecs_stacked ** 2, dim=1)).view(-1, 1)
+
+    # Normalize the z_vec_batch tensor
+    z_vecs_stacked = z_vecs_stacked / magnitude
 
 
-def permute_microbatch(masks, tms, labels, names):
-    # permute the channels of the microbatch == permute the instances == permute the microbatch
-    for idx, (mask, tm, label, name) in enumerate(zip(masks, tms, labels, names)):
-        # permute the instances
-        perm = torch.randperm(mask.shape[0])
-        masks[idx] = mask[perm]
-        tms[idx] = tm[perm]
-        labels[idx] = label[perm]
-        names[idx] = name[perm.tolist()]
-    # names / labels should be predicted by the mask rcnn in the full pipeline
-    return masks, tms, labels, names
+    cut = 12
+    if zs_stacked.shape[0] > cut:
+        images_stacked_masked = images_stacked_masked[:cut]
+        zs_stacked = zs_stacked[:cut]
+        z_vecs_stacked, names = z_vecs_stacked[:cut], names[:cut]
+        XYZs_stacked = XYZs_stacked[:cut]
+
+    stack = (images_stacked_masked, zs_stacked, z_vecs_stacked, names, XYZs_stacked.type(torch.float32))
+    return stack
+
+
+def permute_microbatch(imgs, zs, z_vecs, names, XYZs):
+    # generate permutation
+    perm = torch.randperm(imgs.shape[0])
+    # permute the images
+    imgs = imgs[perm]
+    # permute the zs
+    zs = zs[perm]
+    # permute the z_vecs
+    z_vecs = z_vecs[perm]
+    # permute the names
+    names = [names[i] for i in perm]
+    # permute the XYZs
+    XYZs = XYZs[perm]
+
+    return imgs, zs, z_vecs, names, XYZs
 
 
 class CollateWrapper:

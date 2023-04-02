@@ -15,69 +15,89 @@ def _init_layer(layer):
 class PoseEstimationModel(nn.Module):
     def __init__(self, num_channels=7):
         super(PoseEstimationModel, self).__init__()
+        self.workround = False
 
         self.Zloss = nn.MSELoss()
         self.Wloss = nn.MSELoss()
 
-        self.backbone = timm.create_model("efficientnetv2_rw_s", pretrained=True, in_chans=num_channels)
+        self.backbone = timm.create_model("efficientnetv2_rw_m", pretrained=True, in_chans=num_channels)
         self.backbone.classifier = nn.Identity()
 
-        self.Z_head = nn.Sequential(
-            nn.Linear(self.backbone.num_features, 2048),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(2048, 1024),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(1024, 1)
-        )
-
         self.W_head = nn.Sequential(
-            nn.Linear(self.backbone.num_features + 1, 2048),
-            nn.GroupNorm(1, 2048),
+            nn.Linear(self.backbone.num_features + 3, 8192),
+            nn.BatchNorm1d(8192),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(8192, 8192),
+            nn.BatchNorm1d(8192),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(8192, 2048),
+            nn.BatchNorm1d(2048),
             nn.ReLU(),
             nn.Dropout(0.5),
             nn.Linear(2048, 1024),
-            nn.GroupNorm(1, 1024),
+            nn.BatchNorm1d(1024),
             nn.ReLU(),
             nn.Dropout(0.5),
             nn.Linear(1024, 512),
-            nn.GroupNorm(1, 512),
+            nn.BatchNorm1d(512),
             nn.ReLU(),
             nn.Dropout(0.5),
             nn.Linear(512, 256),
-            nn.GroupNorm(1, 256),
-            nn.ReLU(),
+            nn.BatchNorm1d(256),
+            nn.LeakyReLU(0.1),
             nn.Dropout(0.5),
-            nn.Linear(256, 3)
+            nn.Linear(256, 128),
+            nn.BatchNorm1d(128),
+            nn.LeakyReLU(0.1),
+            nn.Dropout(0.3),
+            nn.Linear(128, 64),
+            nn.BatchNorm1d(64),
+            nn.LeakyReLU(0.1),
+            nn.Dropout(0.3),
+            nn.Linear(64, 3)
         )
 
-        self.Z_head.apply(_init_layer)
+        # self.Z_head.apply(_init_layer)
         self.W_head.apply(_init_layer)
+        self.backbone.apply(_init_layer)
 
     def forward_s1(self, x):
         features = self.backbone(x)
         Z = self.Z_head(features)
         return Z
 
-    def forward_s2(self, x):
+    def forward_s2(self, x, XYZ):
+        if x.shape[0] == 1:
+            # workround for batch size 1, as batchnorm does not work with batch size 1
+            x = torch.cat([x, x], dim=0)
+            XYZ = torch.cat([XYZ, XYZ], dim=0)
+            self.workround = True
         features = self.backbone(x)
-        Z = self.Z_head(features)
-        merged_features = torch.cat((features, Z), dim=1)
-        W = self.W_head(merged_features)
+        stacked = torch.cat((features, XYZ), dim=1)
+        W = self.W_head(stacked)
         return W
 
     def loss_Z(self, hat_Z, gt_Z):
         return self.Zloss(hat_Z, gt_Z)
 
-    def loss_W(self, What, Wgt):
-        return self.Wloss(What, Wgt)
+    def loss_W(self, hat_W, gt_W):
+        if self.workround:
+            hat_W = hat_W[0]
+            gt_W = gt_W[0]
+            self.workround = False
+        wloss = self.Wloss(hat_W, gt_W)
+        return wloss
 
     def forward(self, x, stage):
         if stage == 1:
             return self.forward_s1(x)
         elif stage == 2:
             return self.forward_s2(x)
+
+    def normalize_rows(self, tensor):
+        return tensor / torch.norm(tensor, dim=1, keepdim=True)
 
 
 class RotationLoss():
