@@ -1,6 +1,7 @@
 import os
 import pathlib
 
+import cv2
 import numpy as np
 import torch
 from pycocotools import mask as coco_mask
@@ -252,7 +253,7 @@ def collate_TM_GT(batch, channels=None):
     rots = [target['rot'] for target in targets]
 
     # Extract the Z vector
-    z_vecs = [rot[:, 2, :] for rot in rots]
+    z_vecs = [rot[:, :, 2] for rot in rots]
 
     # change up the XY image to have the standard top left corner as origin
     # instead of the center of the image
@@ -333,6 +334,43 @@ def collate_TM_GT(batch, channels=None):
             img = img[:, y1:y2, x1:x2]
             image_masks_cropped.append(img)
 
+            # debug viz
+            # from matplotlib.colors import Normalize
+            # from matplotlib.cm import ScalarMappable
+            #
+            # img = np.transpose(img, (1, 2, 0))
+            # img = img[:, :, 0]
+            #
+            # fig, ax = plt.subplots(figsize=(10, 10))
+            # ax.imshow(img)
+            #
+            # start = np.array([img.shape[1] // 2, img.shape[0] // 2])
+            #
+            # scaling_factor = 100
+            # end = start + scaling_factor * np.array([z_vec[j][0], z_vec[j][1]])
+            #
+            # # Create a set of points along the line
+            # num_points = 100
+            # points = np.linspace(start, end, num_points)
+            #
+            # # Normalize the z-values of the points along the line
+            # z_values = np.linspace(start[1] + scaling_factor * z_vec[j][2], end[1], num_points)
+            # norm = Normalize(vmin=z_values.min(), vmax=z_values.max())
+            # colors = plt.cm.viridis(norm(z_values))
+            #
+            # # Plot the line with color based on z-value (height)
+            # for i in range(num_points - 1):
+            #     ax.plot(points[i:i + 2, 0], points[i:i + 2, 1], '-', color=colors[i], alpha=0.8)
+            #
+            # # Add a colorbar
+            # sm = ScalarMappable(cmap='viridis', norm=norm)
+            # sm.set_array([])
+            # plt.colorbar(sm, ax=ax, label='Height')
+            #
+            # plt.show()
+            # print("z_vec", z_vec[j])
+
+
         # stack the images
         image_masks_cropped = [torch.from_numpy(img) for img in image_masks_cropped]
         image_masks_stacked = torch.stack(image_masks_cropped)
@@ -341,6 +379,7 @@ def collate_TM_GT(batch, channels=None):
         zs_stacked.append(z)
 
         # z_vec = z_vec.unsqueeze(0)
+        # concat 0 to the last position of the z_vec
         z_vecs_stacked.append(z_vec)
 
         # add the images to the list
@@ -369,19 +408,23 @@ def collate_TM_GT(batch, channels=None):
     # Normalize the z_vec_batch tensor
     z_vecs_stacked = z_vecs_stacked / magnitude
 
+    # cut = 2
+    # if zs_stacked.shape[0] > cut:
+    #     images_stacked_masked = images_stacked_masked[:cut]
+    #     zs_stacked = zs_stacked[:cut]
+    #     z_vecs_stacked, names = z_vecs_stacked[:cut], names[:cut]
+    #     XYZs_stacked = XYZs_stacked[:cut]
 
-    cut = 12
-    if zs_stacked.shape[0] > cut:
-        images_stacked_masked = images_stacked_masked[:cut]
-        zs_stacked = zs_stacked[:cut]
-        z_vecs_stacked, names = z_vecs_stacked[:cut], names[:cut]
-        XYZs_stacked = XYZs_stacked[:cut]
+    # append 0 to the last position of the z_vecs_stacked to get shape (batch_size, 4)
+    #z_vecs_stacked = torch.cat((z_vecs_stacked, torch.zeros(z_vecs_stacked.shape[0], 1)), dim=1)
+
 
     stack = (images_stacked_masked, zs_stacked, z_vecs_stacked, names, XYZs_stacked.type(torch.float32))
     return stack
 
 
 def permute_microbatch(imgs, zs, z_vecs, names, XYZs):
+    # say this is for better generalization
     # generate permutation
     perm = torch.randperm(imgs.shape[0])
     # permute the images
@@ -416,6 +459,9 @@ def createDataLoader(path, batchsize=1, shuffle=True, num_workers=4, channels: l
 
     # Load the COCO dataset
     dataset = CustomCocoDetection(root=str(path), annFile=str(ano_path))
+
+    # subset the dataset
+    #dataset = Subset(dataset, range(0, 200))
 
     # Calculate the lengths of the train and validation sets
     train_len = int(len(dataset) * split)

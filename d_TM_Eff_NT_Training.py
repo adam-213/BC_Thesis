@@ -1,3 +1,5 @@
+import time
+
 import torch
 import torch.nn as nn
 from torch.cuda.amp import autocast, GradScaler
@@ -9,7 +11,7 @@ import pathlib
 from torch.utils.checkpoint import checkpoint
 import random
 import numpy as np
-
+import seaborn as sns
 from b_Dataloader_TM_CNN_NT import createDataLoader
 from c_TM_Eff_NT import PoseEstimationModel
 
@@ -96,14 +98,20 @@ class Trainer:
             XYZs = XYZs.to(self.device)
 
             # Mixed precision training for speeeeed
+
             weights = self.model.forward_s2(images_stacked_masked, XYZs)
-            loss = self.model.loss_W(weights, z_vecs)
+            loss = self.model.loss_W(weights, z_vecs, images_stacked_masked, XYZs, [batch, epoch])
 
             # Scale the gradients
-            self.scaler.scale(loss).backward()
-            # Update the optimizer with the combined gradients
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
+            # self.scaler.scale(loss).backward()
+            # # Update the optimizer with the combined gradients
+            # self.scaler.step(self.optimizer)
+            # self.scaler.update()
+            # self.scheduler.step()
+
+            loss.backward()
+            self.optimizer.step()
+
             self.scheduler.step()
 
             total_loss_list.append(loss.item())
@@ -129,7 +137,7 @@ class Trainer:
                 # Mixed precision training for speeeeed
                 with autocast():
                     weights = self.model.forward_s2(images_stacked_masked, XYZs)
-                    val_loss = self.model.loss_W(weights, z_vecs)
+                    val_loss = self.model.loss_W(weights, z_vecs, images_stacked_masked, XYZs, [batch, epoch])
 
                 total_val_loss_list.append(val_loss.item())
 
@@ -138,9 +146,9 @@ class Trainer:
         return total_val_loss_list
 
     def train(self, num_epochs, stage=1, checkpoint_path=None):
+        stage1_train_losses, stage1_val_losses = [], []
+        stage2_train_losses, stage2_val_losses = [], []
         for epoch in range(num_epochs):
-            stage1_train_losses, stage1_val_losses = [], []
-            stage2_train_losses, stage2_val_losses = [], []
             if stage == 1:
                 s1_loss = self.train_one_epoch_stage_1(epoch)
                 stage1_train_losses.append(s1_loss)
@@ -158,35 +166,55 @@ class Trainer:
 
                 s2_loss_val = self.val_one_epoch_stage_2(epoch)
                 stage2_val_losses.append(s2_loss_val)
-
+                # stage2_val_losses.append(s2_loss)
+                # I had a crash on memory here so this is to prevent that
+                stage2_train_losses = stage2_train_losses[-8000:]
+                stage2_val_losses = stage2_val_losses[-8000:]
                 self.plot_losses(stage2_train_losses, stage2_val_losses, stage=2, epoch=epoch)
 
+                if epoch % 5 == 0:
 
-            # Save the checkpoint
-            if checkpoint_path:
-                torch.save({
-                    'epoch': epoch,
-                    'model_state_dict': self.model.state_dict(),
-                    'optimizer_state_dict': self.optimizer.state_dict(),
-                    'scaler_state_dict': self.scaler.state_dict(),
-                    'scheduler_state_dict': self.scheduler.state_dict(),
-                }, checkpoint_path.format(epoch, f"stage{stage}"))
+                    # Save the checkpoint
+                    if checkpoint_path:
+                        torch.save({
+                            'epoch': epoch,
+                            'model_state_dict': self.model.state_dict(),
+                            'optimizer_state_dict': self.optimizer.state_dict(),
+                            'scaler_state_dict': self.scaler.state_dict(),
+                            'scheduler_state_dict': self.scheduler.state_dict(),
+                        }, checkpoint_path.format(epoch, f"stage{stage}"))
 
     def plot_losses(self, train_losses, val_losses, stage=1, epoch=0):
-        train_losses = np.array(train_losses).flatten()
-        val_losses = np.array(val_losses).flatten()
+        # Flatten the nested lists
+        train_losses = [item for sublist in train_losses for item in sublist]
+        val_losses = [item for sublist in val_losses for item in sublist]
+
+        train_losses = np.array(train_losses).astype(np.float64)
+        val_losses = np.array(val_losses).astype(np.float64)
+
+        # Remove or replace NaN values
+        train_losses = np.nan_to_num(train_losses, nan=np.nanmean(train_losses))
+        val_losses = np.nan_to_num(val_losses, nan=np.nanmean(val_losses))
+
         fig, ax = plt.subplots(figsize=(10, 5))
 
         train_loss_len = len(train_losses)  # Calculate the offset for the validation loss curve
         val_loss_x = np.arange(train_loss_len, train_loss_len + len(val_losses))  # Add the offset to the x values
+
+        # Add regression lines
 
         ax.plot(train_losses, label="Train")
         ax.plot(val_loss_x, val_losses, label="Validation")  # Use the shifted x values for the validation loss curve
         ax.set_title(f"Stage {stage} Epoch {epoch} Losses")
         ax.set_xlabel("Batch")
         ax.set_ylabel("Loss")
+        sns.regplot(x=np.arange(len(train_losses)), y=train_losses, ax=ax, label="Train RegLine", color='blue',
+                    scatter=False, order=1)
+        sns.regplot(x=val_loss_x, y=val_losses, ax=ax, label="Validation RegLine", color='orange', scatter=False,
+                    order=1)
         ax.legend()
-        plt.savefig(f"stage{stage}_{epoch}_losses.png")
+        plt.savefig(f"VT_stage{stage}_epoch{epoch}.png")
+        plt.close()
 
     def infer_s1_driver(self, dataloder):
         self.model.eval()
@@ -225,7 +253,7 @@ class Trainer:
 
     def load_checkpoint(self, path):
         checkpoint = torch.load(path)
-        #state_dict = {k: v for k, v in checkpoint['model_state_dict'].items() if 'W_head' not in k}
+        # state_dict = {k: v for k, v in checkpoint['model_state_dict'].items() if 'W_head' not in k}
         state_dict = checkpoint['model_state_dict']
         self.model.load_state_dict(state_dict, strict=False)
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -264,31 +292,31 @@ def s2_train():
     # Modify these lines to use your custom dataloader
     base_path = pathlib.Path(__file__).parent.absolute()
     coco_path = base_path.joinpath('COCO_TEST')
-    channels = [0, 1, 2, 5, 9]
+    channels = [0, 1, 2, 5]
 
-    train_dataloader, val_dataloader = createDataLoader(coco_path, batchsize=2, channels=channels, num_workers=3,
+    train_dataloader, val_dataloader = createDataLoader(coco_path, batchsize=2, channels=channels, num_workers=8,
                                                         shuffle=True)
 
     model = PoseEstimationModel(len(channels))
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.01, weight_decay=0.0001)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.0025, weight_decay=0.0001)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
-    num_epochs = 2
+    num_epochs = 2500
     scaler = GradScaler()
-    max_lr = 0.025
+    max_lr = 0.015
     total_steps = num_epochs * len(train_dataloader)
-    pct_start = 0.33  # Percentage of steps for the increasing phase
+    pct_start = 0.2  # Percentage of steps for the increasing phase
     anneal_strategy = 'cos'  # Can be 'linear' or 'cos'
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr, total_steps=total_steps,
                                                     pct_start=pct_start, anneal_strategy=anneal_strategy,
-                                                    cycle_momentum=True, base_momentum=0.75, max_momentum=0.95)
+                                                    cycle_momentum=True, base_momentum=0.75, max_momentum=0.99)
 
     trainer = Trainer(model, train_dataloader, val_dataloader, optimizer, device, scaler, scheduler)
-    #trainer.load_checkpoint("pose_estimation_model_M_19_stage1_0_stage2_2.pth")
-    #trainer.scheduler.pct_start = 0.1
+    trainer.load_checkpoint("pose_estimation_model_VT175_5_stage2.pth")
+    # trainer.scheduler.pct_start = 0.1
 
-    save_path = "pose_estimation_model_M_stage2only_{}_{}.pth"
+    save_path = "pose_estimation_model_VT175_{}_{}.pth"
 
     trainer.train(num_epochs, checkpoint_path=save_path, stage=2)
 
@@ -319,5 +347,6 @@ def inference():
 
 if __name__ == '__main__':
     # s1_train()
+    # time.sleep(3600)
     s2_train()
     # inference()
