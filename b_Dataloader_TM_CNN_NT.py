@@ -324,15 +324,25 @@ def collate_TM_GT(batch, channels=None):
             XYZ = np.array([X, Y, zt])
             XYZs.append(XYZ)
             # compute the crop coordinates
-            x1, y1, x2, y2 = X - w, Y - h, X + w, Y + h
-            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-            # pad the image with same amount (the image size is not the same as the bbox size)
-            # total hack and could be more efficient
-            img = np.pad(img, ((0, 0), (abs(min(0, y1)), max(0, y2 - img.shape[1])),
-                               (abs(min(0, x1)), max(0, x2 - img.shape[2]))), "constant")
-            # crop the image in the xy as the center with size of max_bbox_exp
+            x1, y1, x2, y2 = int(X - w), int(Y - h), int(X + w), int(Y + h)
+
+            # Calculate the padding required for each side
+            pad_top = max(-y1, 0)
+            pad_bottom = max(y2 - img.shape[1], 0)
+            pad_left = max(-x1, 0)
+            pad_right = max(x2 - img.shape[2], 0)
+
+            # Pad the image only if required
+            if pad_top or pad_bottom or pad_left or pad_right:
+                img = np.pad(img, ((0, 0), (pad_top, pad_bottom), (pad_left, pad_right)), mode="constant")
+
+            # Clip the coordinates to be within the image boundaries
+            x1, y1, x2, y2 = np.clip([x1, y1, x2, y2], a_min=0, a_max=None)
+
+            # Crop the image using the clipped and padded coordinates
             img = img[:, y1:y2, x1:x2]
-            image_masks_cropped.append(img)
+
+            image_masks_cropped.append(img if type(img) == torch.Tensor else torch.from_numpy(img))
 
             # debug viz
             # from matplotlib.colors import Normalize
@@ -372,7 +382,8 @@ def collate_TM_GT(batch, channels=None):
 
 
         # stack the images
-        image_masks_cropped = [torch.from_numpy(img) for img in image_masks_cropped]
+        #image_masks_cropped = [torch.from_numpy(img) for img in image_masks_cropped]
+
         image_masks_stacked = torch.stack(image_masks_cropped)
 
         z = z.unsqueeze(1)

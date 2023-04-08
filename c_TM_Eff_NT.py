@@ -23,25 +23,31 @@ class PoseEstimationModel(nn.Module):
         self.Zloss = nn.MSELoss()
         self.Wloss = nn.MSELoss()
 
-        self.backbone = timm.create_model("mobilevitv2_100", pretrained=False, in_chans=num_channels)
+        self.backbone = timm.create_model("tinynet_e", pretrained=False, in_chans=num_channels)
         self.backbone.classifier = nn.Identity()
 
+
         self.W_head = nn.Sequential(
-            nn.Linear(1000 + 3, 4096+1024),
-            nn.BatchNorm1d(4096+1024),
+            nn.Linear(1280 + 3, 4096),
+            nn.BatchNorm1d(4096),
             nn.LeakyReLU(0.25),
             nn.Dropout(0.5),
-            nn.Linear(4096+1024, 2048+512),
+            nn.Linear(4096, 2048+512),
             nn.BatchNorm1d(2048+512),
             nn.LeakyReLU(0.2),
-            nn.Dropout(0.5),
+            nn.Dropout(0.4),
             nn.Linear(2048+512, 1024+256),
             nn.BatchNorm1d(1024+256),
             nn.LeakyReLU(0.15),
-            nn.Dropout(0.5),
+            nn.Dropout(0.3),
             nn.Linear(1024+256, 512+128),
+            nn.BatchNorm1d(512+128),
+            nn.LeakyReLU(0.15),
+            nn.Dropout(0.2),
+            nn.Linear(512+128, 256+64),
             nn.LeakyReLU(0.1),
-            nn.Linear(512+128, 3)
+            nn.Dropout(0.1),
+            nn.Linear(256+64, 3)
         )
 
         self.W_head.apply(_init_layer)
@@ -114,13 +120,13 @@ class PoseEstimationModel(nn.Module):
 
                     # Plot hat_w line in green
                     for i in range(num_points - 1):
-                        ax.plot(points_hat_w[i:i + 2, 0], points_hat_w[i:i + 2, 1], '-', color='g', alpha=0.8)
+                        ax.plot(points_hat_w[i:i + 2, 0], points_hat_w[i:i + 2, 1], '-', color='g', alpha=0.5)
 
                     # Plot gt_w line in blue
                     for i in range(num_points - 1):
-                        ax.plot(points_gt_w[i:i + 2, 0], points_gt_w[i:i + 2, 1], '.', color='b', alpha=0.8)
+                        ax.plot(points_gt_w[i:i + 2, 0], points_gt_w[i:i + 2, 1], '.', color='b', alpha=0.5)
 
-                    fig.savefig(f"VT_test_{batchepoch[0]}_{batchepoch[1]}_{img_index}.png")
+                    fig.savefig(f"hn_d{batchepoch[0]}_{batchepoch[1]}_{img_index}.png")
                     plt.close(fig)
         except:
             pass

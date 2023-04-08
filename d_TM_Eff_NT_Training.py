@@ -168,8 +168,9 @@ class Trainer:
                 stage2_val_losses.append(s2_loss_val)
                 # stage2_val_losses.append(s2_loss)
                 # I had a crash on memory here so this is to prevent that
-                stage2_train_losses = stage2_train_losses[-8000:]
-                stage2_val_losses = stage2_val_losses[-8000:]
+                stage2_train_losses = stage2_train_losses[-4000:]
+                stage2_val_losses = stage2_val_losses[-1000:]
+
                 self.plot_losses(stage2_train_losses, stage2_val_losses, stage=2, epoch=epoch)
 
                 if epoch % 5 == 0:
@@ -209,11 +210,11 @@ class Trainer:
         ax.set_xlabel("Batch")
         ax.set_ylabel("Loss")
         sns.regplot(x=np.arange(len(train_losses)), y=train_losses, ax=ax, label="Train RegLine", color='blue',
-                    scatter=False, order=1)
+                    scatter=False, order=3)
         sns.regplot(x=val_loss_x, y=val_losses, ax=ax, label="Validation RegLine", color='orange', scatter=False,
-                    order=1)
+                    order=3)
         ax.legend()
-        plt.savefig(f"VT_stage{stage}_epoch{epoch}.png")
+        plt.savefig(f"hn_d{stage}_epoch{epoch}.png")
         plt.close()
 
     def infer_s1_driver(self, dataloder):
@@ -294,55 +295,41 @@ def s2_train():
     coco_path = base_path.joinpath('COCO_TEST')
     channels = [0, 1, 2, 5]
 
-    train_dataloader, val_dataloader = createDataLoader(coco_path, batchsize=2, channels=channels, num_workers=8,
+    train_dataloader, val_dataloader = createDataLoader(coco_path, batchsize=8, channels=channels, num_workers=8,
                                                         shuffle=True)
 
     model = PoseEstimationModel(len(channels))
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.0025, weight_decay=0.0001)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.00025, weight_decay=0.0001)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
-    num_epochs = 2500
+    num_epochs = 25
     scaler = GradScaler()
-    max_lr = 0.015
+    max_lr = 0.005
     total_steps = num_epochs * len(train_dataloader)
     pct_start = 0.2  # Percentage of steps for the increasing phase
     anneal_strategy = 'cos'  # Can be 'linear' or 'cos'
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr, total_steps=total_steps,
                                                     pct_start=pct_start, anneal_strategy=anneal_strategy,
-                                                    cycle_momentum=True, base_momentum=0.75, max_momentum=0.99)
+                                                    cycle_momentum=True, base_momentum=0.85, max_momentum=0.95)
 
     trainer = Trainer(model, train_dataloader, val_dataloader, optimizer, device, scaler, scheduler)
-    trainer.load_checkpoint("pose_estimation_model_VT175_5_stage2.pth")
+    #trainer.load_checkpoint("pose_estimation_model_VT175_5_stage2.pth")
     # trainer.scheduler.pct_start = 0.1
 
-    save_path = "pose_estimation_model_VT175_{}_{}.pth"
+
+    save_path = "hn_d_{}_{}.pth"
 
     trainer.train(num_epochs, checkpoint_path=save_path, stage=2)
 
+    torch.save({
+        'epoch': 75,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scaler_state_dict': scaler.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
+    }, "hn_d_{}_{}.pth".format(2, 75))
 
-def inference():
-    base_path = pathlib.Path(__file__).parent.absolute()
-    coco_path = base_path.joinpath('COCO_TEST')
-    channels = [0, 1, 2, 3, 4, 5]
-
-    train_dataloader, val_dataloader = createDataLoader(coco_path, batchsize=2, channels=channels, num_workers=3,
-                                                        shuffle=True)
-
-    model = PoseEstimationModel(len(channels))
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=0.001)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
-
-    scaler = GradScaler()
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=1, verbose=True,
-                                                           min_lr=0.000001)
-
-    trainer = Trainer(model, train_dataloader, val_dataloader, optimizer, device, scaler, scheduler)
-    trainer.load_checkpoint("pose_estimation_model_49_stage1.pth")
-
-    trainer.infer_s1_driver(val_dataloader)
 
 
 if __name__ == '__main__':
