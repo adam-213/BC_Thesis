@@ -134,6 +134,7 @@ def prepare_masks(target):
         inst_masks = torch.nn.utils.rnn.pad_sequence(inst_masks, batch_first=True, padding_value=0)
     except RuntimeError as e:
         print("Error: ", e)
+        return None,None
         print("inst_masks: ", inst_masks)
         raise e
 
@@ -144,29 +145,34 @@ def prepare_masks(target):
 
 def prepare_transforms(target):
     # Extract transformation matrices from target
-    inst_transforms = [torch.tensor(inst['transform']) for inst in target]
-    # turn them into np arrays, so we can reshape them correctly
-    inst_transforms = [np.array(inst_transform) for inst_transform in inst_transforms]
-    # Order F because the matrices are in column major order (mathematicians ...)
-    inst_transforms = [i.reshape((4, 4), order='F') for i in inst_transforms]
-    # Extract rotation and translation
-    inst_rotations = [inst_transform[:3, :3] for inst_transform in inst_transforms]
-    # Extract translation - not actualy needed as target will use analytical methods from the predicted masks + lookup of depth
-    inst_translations = [inst_transform[:3, 3] for inst_transform in inst_transforms]
-    # turn them into torch tensors
-    inst_rotations = [torch.from_numpy(inst_rotation).type(torch.float32) for inst_rotation in inst_rotations]
-    inst_translations = [torch.from_numpy(inst_translation).type(torch.float32) for inst_translation in
-                         inst_translations]
-    # stack them into a single tensor - (N, 3, 3) dtype: torch.float32, N: number of instances (variable)
-    inst_rotations = torch.stack(inst_rotations, dim=0)
-    # stack them into a single tensor - (N, 3) dtype: torch.float32, N: number of instances (variable)
-    inst_translations = torch.stack(inst_translations, dim=0)
+    try:
+        inst_transforms = [torch.tensor(inst['transform']) for inst in target]
+        # turn them into np arrays, so we can reshape them correctly
+        inst_transforms = [np.array(inst_transform) for inst_transform in inst_transforms]
+        # Order F because the matrices are in column major order (mathematicians ...)
+        inst_transforms = [i.reshape((4, 4), order='F') for i in inst_transforms]
+        # Extract rotation and translation
+        inst_rotations = [inst_transform[:3, :3] for inst_transform in inst_transforms]
+        # Extract translation - not actualy needed as target will use analytical methods from the predicted masks + lookup of depth
+        inst_translations = [inst_transform[:3, 3] for inst_transform in inst_transforms]
+        # turn them into torch tensors
+        inst_rotations = [torch.from_numpy(inst_rotation).type(torch.float32) for inst_rotation in inst_rotations]
+        inst_translations = [torch.from_numpy(inst_translation).type(torch.float32) for inst_translation in
+                             inst_translations]
+        # stack them into a single tensor - (N, 3, 3) dtype: torch.float32, N: number of instances (variable)
+        inst_rotations = torch.stack(inst_rotations, dim=0)
+        # stack them into a single tensor - (N, 3) dtype: torch.float32, N: number of instances (variable)
+        inst_translations = torch.stack(inst_translations, dim=0)
+    except RuntimeError as e:
+        print("Error: ", e)
+        print("inst_transforms: ", inst_transforms)
+        return None, None
 
     # now, the thinking goes like this:
     # Since the matrices are aligned on the axis with the infinite rotational symetry (Z axis)
     # We know that the rotation in the matrix will be aligned with the rotational symetry axis
     # So we can turn this problem into predicting the changed Z axis, in effect the change in coordinate system
-    # This should basically dissregard the rotational symetry therefore symplifying the problem drastically
+    # This should basically dissregard the rotational symetry, therefore symplifying the problem drastically,
     # this line can be defined as point slope form with xyz being predicted / calculated from the mask
     # and the point being the center of mass of the mask
     # and slopes being predicted by the network
@@ -177,9 +183,7 @@ def prepare_transforms(target):
 def prepare_targets(targets) -> list:
     prepared_targets = []
     for target in targets:
-        target = target[2:]
         if len(target) == 0:
-            prepared_targets.append(None)
             continue
         prepared_target = {}
         # Masks and mask labels
@@ -202,6 +206,17 @@ def prepare_targets(targets) -> list:
         # bbox = bbox.type(torch.float32)
         prepared_target['box'] = bbox
 
+        # filter out bins and background - filter out upper names containing 'bin' or 'background'
+        filt = prepared_target['labels'] > 2
+        prepared_target['masks'] = prepared_target['masks'][filt, :, :]
+        prepared_target['rot'] = prepared_target['rot'][filt, :, :]
+        prepared_target['move'] = prepared_target['move'][filt, :]
+        prepared_target['labels'] = prepared_target['labels'][filt]
+        prepared_target['names'] = prepared_target['names'][filt]
+        prepared_target['box'] = np.array(prepared_target['box'])[filt].tolist()
+        if len(prepared_target['labels']) == 0:
+            prepared_target = None
+
         prepared_targets.append(prepared_target)
 
     # List of dictionaries - one dictionary per image
@@ -210,8 +225,9 @@ def prepare_targets(targets) -> list:
 
 def prepare_batch(batch):
     images, targets = zip(*batch)
+    images,targets = zip(*[(image , target) for image,target in zip(images,targets) if len(target) != 0 ])
 
-    # Stack images on first dimension to get a tensor of shape (batch_size, C, H, W)
+    # Stack images  on first dimension to get a tensor of shape (batch_size, C, H, W)
     batched_images = torch.stack(images, dim=0).permute(0, 3, 1, 2)
     del images
 
@@ -228,13 +244,25 @@ def prepare_batch(batch):
     return batched_images, prepared_targets
 
 
-def collate_TM_GT(batch, channels=None):
+def collate_TM_GT(batch, channels=None, gray=True):
     """Custom collate function to prepare data for the model"""
     images, targets = prepare_batch(batch)
     if not targets:
         return None, None, None, None, None
     if channels:
         images = images[:, channels, :, :]
+    # if gray and rgb in channels:
+    if gray and min([i in channels for i in [0, 1, 2]]):
+        # turn rgb into gray without touching everything else
+        images = torch.cat(
+            (images[:, 0:1, :, :] * 0.2989 + images[:, 1:2, :, :] * 0.5870 + images[:, 2:3, :, :] * 0.1140,
+             images[:, 3:, :, :]), dim=1)
+        # blur the image
+        images = torch.cat((torch.nn.functional.avg_pool2d(images[:, 0:1, :, :], 3, stride=1, padding=1),
+                            images[:, 1:, :, :]), dim=1)
+        images = torch.nn.functional.avg_pool2d(images, 3, stride=1, padding=1)
+
+
     moves = [target['move'] for target in targets]
     # Get the Z translation for prediction as XY can be predicted from the mask
     zs = [move[:, 2] for move in moves]
@@ -349,13 +377,13 @@ def collate_TM_GT(batch, channels=None):
             # from matplotlib.cm import ScalarMappable
             #
             # img = np.transpose(img, (1, 2, 0))
-            # img = img[:, :, 0]
+            # img = img[:, :, :3]
             #
             # fig, ax = plt.subplots(figsize=(10, 10))
             # ax.imshow(img)
             #
             # start = np.array([img.shape[1] // 2, img.shape[0] // 2])
-            #
+            # ax.scatter(start[0], start[1], c='r', s=10)
             # scaling_factor = 100
             # end = start + scaling_factor * np.array([z_vec[j][0], z_vec[j][1]])
             #
@@ -380,9 +408,8 @@ def collate_TM_GT(batch, channels=None):
             # plt.show()
             # print("z_vec", z_vec[j])
 
-
         # stack the images
-        #image_masks_cropped = [torch.from_numpy(img) for img in image_masks_cropped]
+        # image_masks_cropped = [torch.from_numpy(img) for img in image_masks_cropped]
 
         image_masks_stacked = torch.stack(image_masks_cropped)
 
@@ -419,7 +446,7 @@ def collate_TM_GT(batch, channels=None):
     # Normalize the z_vec_batch tensor
     z_vecs_stacked = z_vecs_stacked / magnitude
 
-    # cut = 2
+    #cut = 30
     # if zs_stacked.shape[0] > cut:
     #     images_stacked_masked = images_stacked_masked[:cut]
     #     zs_stacked = zs_stacked[:cut]
@@ -427,8 +454,7 @@ def collate_TM_GT(batch, channels=None):
     #     XYZs_stacked = XYZs_stacked[:cut]
 
     # append 0 to the last position of the z_vecs_stacked to get shape (batch_size, 4)
-    #z_vecs_stacked = torch.cat((z_vecs_stacked, torch.zeros(z_vecs_stacked.shape[0], 1)), dim=1)
-
+    # z_vecs_stacked = torch.cat((z_vecs_stacked, torch.zeros(z_vecs_stacked.shape[0], 1)), dim=1)
 
     stack = (images_stacked_masked, zs_stacked, z_vecs_stacked, names, XYZs_stacked.type(torch.float32))
     return stack
@@ -455,24 +481,26 @@ def permute_microbatch(imgs, zs, z_vecs, names, XYZs):
 class CollateWrapper:
     # Lambas are a nono in multiprocessing
     # need to be able to pickle the collate function to use it in multiprocessing, can't pickle lambdas
-    def __init__(self, channels):
+    def __init__(self, channels, gray=False):
         self.collate_fn = collate_TM_GT
         self.channels = channels
+        self.gray = gray
 
     def __call__(self, batch):
-        return self.collate_fn(batch, self.channels)
+        return self.collate_fn(batch, self.channels, self.gray)
 
 
-def createDataLoader(path, batchsize=1, shuffle=True, num_workers=4, channels: list = None, split=0.9):
-    ano_path = (path.joinpath('annotations', "merged_coco.json"))
+def createDataLoader(path, batchsize=1, shuffle=True, num_workers=4, channels: list = None, split=0.9, gray=False):
+    ano_path = (path.joinpath('annotations', "merged_coco_maskrcnn.json"))
+    #ano_path = (path.joinpath('annotations', "merged_coco.json"))
 
-    collate = CollateWrapper(channels)
+    collate = CollateWrapper(channels, gray=gray)
 
     # Load the COCO dataset
     dataset = CustomCocoDetection(root=str(path), annFile=str(ano_path))
 
     # subset the dataset
-    #dataset = Subset(dataset, range(0, 200))
+    #dataset = Subset(dataset, range(0, 300))
 
     # Calculate the lengths of the train and validation sets
     train_len = int(len(dataset) * split)

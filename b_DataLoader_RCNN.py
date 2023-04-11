@@ -24,6 +24,7 @@ class CustomCocoDetection(CocoDetection):
         # overrride the _load_image method to load the images from the npz files in fp16
         # print("Loading image: ", id, "")
         path = self.coco.loadImgs(id)[0]["file_name"]
+        #print("Path: ", path, " ")
         # print("Path: ", path, " ")
         npz_file = np.load(os.path.join(self.root, path))
         # way to get the keys of the npz file, and load them as a list in the same order
@@ -162,7 +163,7 @@ class CollateWrapper:
         return self.collate_fn(batch, self.channels)
 
 
-def createDataLoader(path, bs=1, shuffle=True, num_workers=0, channels: list = None, split=0.9):
+def createDataLoader(path, bs=1, shuffle=False, num_workers=0, channels: list = None, split=0.9):
     ano_path = (path.joinpath('annotations', "merged_coco.json"))
 
     collate = CollateWrapper(channels)
@@ -170,19 +171,22 @@ def createDataLoader(path, bs=1, shuffle=True, num_workers=0, channels: list = N
     # Load the COCO dataset
     dataset = CustomCocoDetection(root=str(path), annFile=str(ano_path))
 
+
     # Calculate the lengths of the train and validation sets
     train_len = int(len(dataset) * split)
     val_len = len(dataset) - train_len
 
     # Create the train and validation subsets
-    train_set, val_set = random_split(dataset, [train_len, val_len])
+    train_set, val_set = random_split(dataset, [train_len, val_len]) # this actually shuffles the dataset not just splits it
+    # reason unknown, thankfully i noticed it
 
     # cut the dataset to a smaller size for testing
     # train_set = Subset(train_set, range(20))
     # val_set = Subset(val_set, range(10))
 
     # Create the PyTorch dataloaders for train and validation sets
-    train_dataloader = DataLoader(train_set, batch_size=bs, shuffle=shuffle, num_workers=num_workers,
+    # TODO change this back to shuffle=shuffle and dataset -> train_set
+    train_dataloader = DataLoader(dataset, batch_size=bs, shuffle=False, num_workers=num_workers,
                                   collate_fn=collate)
     val_dataloader = DataLoader(val_set, batch_size=bs, shuffle=False, num_workers=num_workers,
                                 collate_fn=collate)

@@ -1,5 +1,7 @@
 import time
 
+import numpy
+
 from b_DataLoader_RCNN import createDataLoader as rcdataloader
 
 from c_TM_Eff_NT import PoseEstimationModel as peModel
@@ -57,20 +59,24 @@ def image_to_world_coords(image_coords, intrinsics, Z):
 def prepare_inference():
     base_path = pathlib.Path(__file__).parent.absolute()
     coco_path = base_path.joinpath('COCO_TEST')
-    channels = [0, 1, 2, 5, 9]
+    channels = [0, 1, 2, 3, 4, 5, 9]
+    chans_sel = [0, 1, 2, 5, 6]
     # create unshuffled dataloaders
-    rcdata, val_dataloader, stats = rcdataloader(coco_path, 1, channels=channels)
+    rcdata, val_dataloader, stats = rcdataloader(coco_path, 1, channels=channels, shuffle=True)
     mean, std = stats
-    mean, std = mean[channels], std[channels]
+    mean, std = np.array(mean), np.array(std)
+    # cut out the channels we don't need
+    sel = np.array(channels)[chans_sel]
+    mean, std = mean[sel], std[sel]
 
     rcmodel = rcModel(5, 5, mean, std)
 
     # create models
-    tmmodel = peModel(4)
+    tmmodel = peModel(2)
 
     # load weights
-    tmmodel.load_state_dict(torch.load('hn_d_2_75.pth')['model_state_dict'])
-    rcmodel.load_state_dict(torch.load(base_path.joinpath("RCNN_Weights", "RCNN_TM_18.pth"))['model_state_dict'])
+    tmmodel.load_state_dict(torch.load('full.pth')['model_state_dict'])
+    rcmodel.load_state_dict(torch.load(base_path.joinpath("rcnn", "RCNN_TM_18.pth"))['model_state_dict'])
 
     # set models to eval mode
     tmmodel.eval()
@@ -163,22 +169,35 @@ def translation_layer(best, image):
     x2 = x2 * (1 + k)
     y2 = y2 * (1 + k)
 
-    # get the image with the correct channels - rgbd
-    image = image[:, [0, 1, 2, 3], :, :]
+    # get the image with the correct channels - gs,d,a
+    # image = image[:, [0, 1, 2, 3], :, :]
+    # # combine the rgb to grayscale by the formula
+    # rgb = image[:, [0, 1, 2], :, :]
+    # gs = torch.sum(rgb * torch.Tensor([0.2989, 0.5870, 0.1140]).unsqueeze(1).unsqueeze(1).unsqueeze(1), dim=1)
+    # gs = gs.unsqueeze(1)
+    # image = torch.cat((gs, image[:, 3:, :, :]), dim=1)
 
     # threshold the mask
     threshold = 0.5
     mask[mask > threshold] = 1
     mask[mask <= threshold] = 0
-    masked_image = image * torch.Tensor(mask).unsqueeze(1)
+
+    cut = torch.cat(
+        (image[:, 0:1, :, :] * 0.2989 + image[:, 1:2, :, :] * 0.5870 + image[:, 2:3, :, :] * 0.1140,
+         image[:, 3:4, :, :]), dim=1)
+
+    masked_image = cut * torch.Tensor(mask).unsqueeze(1)
 
     # center crop the image to the bbox
     masked_image_cropped = masked_image[:, :, int(y1):int(y2), int(x1):int(x2)]
-
+    print((x1, y1), x2 - x1, y2 - y1)
     # convert to numpy
-    rect = plt.Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False, edgecolor='g', linewidth=2)
+    rect = plt.Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False, edgecolor='g', linewidth=3)
     plt.imshow(image[0, :3, :, :].permute(1, 2, 0).detach().numpy())
+    plt.imshow(mask.squeeze(0), alpha=0.5)
     plt.gca().add_patch(rect)
+    plt.scatter(centroid_x, centroid_y, c='r', s=10)
+    plt.title("MRCNN_Results + Computed Centroid")
     plt.show()
 
     return masked_image_cropped, (centroid_x, centroid_y, depth_value), (0)
@@ -196,6 +215,8 @@ def vis_mask(rcimags, best, XY):
 
 
 def viz_dir(hat_W, img, XYZ):
+    from itertools import permutations
+    hat_W = torch.stack([hat_W, hat_W], dim=0)
     magnitude = torch.sqrt(torch.sum(hat_W ** 2, dim=1)).view(-1, 1)
 
     hat_W = hat_W / magnitude
@@ -203,18 +224,22 @@ def viz_dir(hat_W, img, XYZ):
     img = img.cpu()
     XYZ = XYZ.cpu()
 
-    hat_w = hat_w.detach().numpy()
-    Img = img.detach().numpy()
+    hat_w = hat_w.detach().numpy()[0, :]
+    # add axis with np.newaxis
+    # stack them up
+    hat_w = hat_w[np.newaxis, :]
+    Img = img.permute(0, 2, 3, 1).detach().numpy()
     XYZ = XYZ.detach().numpy()
 
-    Img = Img[:3, :, :]
+    Img = Img[:, :, :, :3]
 
-    for img_index in range(Img.shape[0]):
-        cur_img = Img[img_index]
-        cur_img = np.transpose(cur_img, (1, 2, 0))
+    for img_index in range(hat_w.shape[0]):
+        cur_img = Img[0]
+        # cur_img = np.transpose(cur_img, (1, 2, 0))
 
         fig, ax = plt.subplots(figsize=(10, 10))
-        ax.imshow(cur_img, cmap='gray')
+        ax.imshow(cur_img[:, :, 0], cmap='gray')
+        ax.set_title('Image with hat_w')
 
         start = np.array([cur_img.shape[1] // 2, cur_img.shape[0] // 2])
 
@@ -235,30 +260,38 @@ def viz_dir(hat_W, img, XYZ):
 import pathlib
 
 if __name__ == '__main__':
-
     rcmodel, tmmodel, rcdata, device = prepare_inference()
     t = time.time()
     # get data from dataloader for maskrcnn
     rcdataiter = iter(rcdata)
     rcimages, rctargets = next(rcdataiter)
+    ptc = rcimages[:, [3, 4, 5], :, :]
+    rcimages = rcimages[:, [0, 1, 2, 5, 6], :, :]
     rcimages = rcimages.to(device)
 
     best = infer_mrcnn(rcmodel, rcimages)
 
     masked_image_cropped, XYZ, world_coords = translation_layer(best, rcimages)
-    plt.imshow(masked_image_cropped[0, :3, :, :].permute(1, 2, 0).detach().numpy())
-    plt.show()
+    # plt.imshow(masked_image_cropped[0, :3, :, :].permute(1, 2, 0).detach().numpy())
+    # plt.show()
 
-    vis_mask(rcimages, best, XYZ)
+    masked_image_cropped = torch.nn.functional.avg_pool2d(masked_image_cropped, 3, stride=1, padding=1)
+
+    #vis_mask(rcimages, best, XYZ)
 
     # pass the data through the pose estimation network
     XYZ = torch.Tensor(XYZ).unsqueeze(0).to(device)
-    print(XYZ.shape)
-    tmoutputs = tmmodel.forward_s2(masked_image_cropped, XYZ)
+
+    stackedimg = torch.cat(([masked_image_cropped] * 4), dim=0)
+    stackedxyz = torch.cat(([XYZ] * 4), dim=0)
+
+    tmoutputs = tmmodel(stackedimg, stackedxyz)
+    # tmoutputs = tmmodel(masked_image_cropped, XYZ)
 
     # get the predicted pose
-    print(tmoutputs)
+    for i in range(4):
+        print("Predicted pose: ", tmoutputs[i].detach().numpy())
 
-    # visualize the predicted pose
-    viz_dir(tmoutputs, masked_image_cropped, XYZ)
-    print("Time taken: ", time.time() - t)
+        # visualize the predicted pose
+        viz_dir(tmoutputs[i], masked_image_cropped, XYZ)
+        print("Time taken: ", time.time() - t)

@@ -9,8 +9,10 @@ from a_preprocess_utils import is_mask_good
 def create_image_json(shape, image_id):
     image = {}
     image["id"] = image_id
-    image["width"] = shape[1]
-    image["height"] = shape[0]
+    # changed this because the image is actaully a 3d array with dept hebing first dimension
+    # so 1 0 to 2 1
+    image["width"] = shape[2]
+    image["height"] = shape[1]
     image["file_name"] = "train" + "/" + str(image_id) + ".npz"
     image["license"] = 1
     return image

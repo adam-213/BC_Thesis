@@ -26,65 +26,6 @@ class Trainer:
         self.scaler = scaler
         self.scheduler = scheduler
 
-    def train_one_epoch_stage_1(self, epoch):
-        self.model.train()
-        total_loss_list = []
-
-        for batch, (images_stacked_masked, z, z_vecs, names) in enumerate(self.train_dataloader):
-            if type(z) == type(None):
-                continue
-            self.optimizer.zero_grad()
-
-            images_stacked_masked = images_stacked_masked.to(self.device)
-            z = z.to(self.device)
-
-            # Checkpointing for memory efficiency
-            # Z = checkpoint(self.model.forward_s1, image_masks_stacked)
-            # loss = self.model.loss_Z(Z, zs)
-            # loss.bckward()
-
-            # self.optimizer.step()
-            # self.optimizer.zero_grad()
-
-            # Mixed precision training for speeeeed
-            with autocast():
-                Z = self.model.forward_s1(images_stacked_masked)
-                loss = self.model.loss_Z(Z, z)
-
-            # Scale the gradients
-            self.scaler.scale(loss).backward()
-            # Update the optimizer with the combined gradients
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-
-            total_loss_list.append(loss.item())
-
-            print(f"Epoch {epoch} Batch {batch} Loss: {loss.item()}")
-
-        return total_loss_list
-
-    def val_one_epoch_stage_1(self, epoch):
-        self.model.eval()
-        total_val_loss_list = []
-
-        with torch.no_grad():
-            for batch, (images_stacked_masked, z, z_vecs, names) in enumerate(self.val_dataloader):
-                if type(z) == type(None):
-                    continue
-                images_stacked_masked = images_stacked_masked.to(self.device)
-                z = z.to(self.device)
-
-                # Mixed precision validation
-                with autocast():
-                    Z = self.model.forward_s1(images_stacked_masked)
-                    val_loss = self.model.loss_Z(Z, z)
-
-                total_val_loss_list.append(val_loss.item())
-
-                print(f"Validation Epoch {epoch} Batch {batch} Loss: {val_loss.item()}")
-
-        return total_val_loss_list
-
     def train_one_epoch_stage_2(self, epoch):
         self.model.train()
         total_loss_list = []
@@ -98,21 +39,24 @@ class Trainer:
             XYZs = XYZs.to(self.device)
 
             # Mixed precision training for speeeeed
-
-            weights = self.model.forward_s2(images_stacked_masked, XYZs)
-            loss = self.model.loss_W(weights, z_vecs, images_stacked_masked, XYZs, [batch, epoch])
+            with autocast():
+                weights = self.model(images_stacked_masked, XYZs)
+                if weights is None:
+                    print("None weights", images_stacked_masked.shape, XYZs.shape)
+                    continue
+                loss = self.model.loss_W(weights, z_vecs, images_stacked_masked, XYZs, [batch, epoch])
 
             # Scale the gradients
-            # self.scaler.scale(loss).backward()
-            # # Update the optimizer with the combined gradients
-            # self.scaler.step(self.optimizer)
-            # self.scaler.update()
+            self.scaler.scale(loss).backward()
+            # Update the optimizer with the combined gradients
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            #self.scheduler.step()
+
+            # loss.backward()
+            # self.optimizer.step()
+            #
             # self.scheduler.step()
-
-            loss.backward()
-            self.optimizer.step()
-
-            self.scheduler.step()
 
             total_loss_list.append(loss.item())
 
@@ -121,7 +65,7 @@ class Trainer:
         return total_loss_list
 
     def val_one_epoch_stage_2(self, epoch):
-        self.model.eval()
+        self.model.train()
         total_val_loss_list = []
 
         with torch.no_grad():
@@ -136,7 +80,7 @@ class Trainer:
 
                 # Mixed precision training for speeeeed
                 with autocast():
-                    weights = self.model.forward_s2(images_stacked_masked, XYZs)
+                    weights = self.model(images_stacked_masked, XYZs)
                     val_loss = self.model.loss_W(weights, z_vecs, images_stacked_masked, XYZs, [batch, epoch])
 
                 total_val_loss_list.append(val_loss.item())
@@ -148,44 +92,37 @@ class Trainer:
     def train(self, num_epochs, stage=1, checkpoint_path=None):
         stage1_train_losses, stage1_val_losses = [], []
         stage2_train_losses, stage2_val_losses = [], []
+        self.colors = sns.color_palette("husl", num_epochs)
+
         for epoch in range(num_epochs):
-            if stage == 1:
-                s1_loss = self.train_one_epoch_stage_1(epoch)
-                stage1_train_losses.append(s1_loss)
+            s2_loss = self.train_one_epoch_stage_2(epoch)
+            stage2_train_losses.append(s2_loss)
 
-                s1_loss_val = self.val_one_epoch_stage_1(epoch)
-                stage1_val_losses.append(s1_loss_val)
+            s2_loss_val = self.val_one_epoch_stage_2(epoch)
+            stage2_val_losses.append(s2_loss_val)
+            # stage2_val_losses.append(s2_loss)
+            # I had a crash on memory here so this is to prevent that
+            # keep last 4 epochs
+            stage2_train_losses = stage2_train_losses[-4:]
+            # stage2_val_losses = stage2_val_losses[-4:]
+            #self.scheduler.update_lr_on_plateau(np.mean(s2_loss_val))
+            self.scheduler.step(np.mean(s2_loss_val))
 
-                self.plot_losses(stage1_train_losses, stage1_val_losses, stage=1, epoch=epoch)
+            self.plot_losses(stage2_train_losses, stage2_val_losses, stage=2, epoch=epoch)
 
-                self.scheduler.step(np.mean(stage1_val_losses))
+            if epoch % 2 == 0:
 
-            elif stage == 2:
-                s2_loss = self.train_one_epoch_stage_2(epoch)
-                stage2_train_losses.append(s2_loss)
+                # Save the checkpoint
+                if checkpoint_path:
+                    torch.save({
+                        'epoch': epoch,
+                        'model_state_dict': self.model.state_dict(),
+                        'optimizer_state_dict': self.optimizer.state_dict(),
+                        'scaler_state_dict': self.scaler.state_dict(),
+                        # 'scheduler_state_dict': self.scheduler.state_dict(),
+                    }, checkpoint_path.format(epoch, f"stage{stage}"))
 
-                s2_loss_val = self.val_one_epoch_stage_2(epoch)
-                stage2_val_losses.append(s2_loss_val)
-                # stage2_val_losses.append(s2_loss)
-                # I had a crash on memory here so this is to prevent that
-                stage2_train_losses = stage2_train_losses[-4000:]
-                stage2_val_losses = stage2_val_losses[-1000:]
-
-                self.plot_losses(stage2_train_losses, stage2_val_losses, stage=2, epoch=epoch)
-
-                if epoch % 5 == 0:
-
-                    # Save the checkpoint
-                    if checkpoint_path:
-                        torch.save({
-                            'epoch': epoch,
-                            'model_state_dict': self.model.state_dict(),
-                            'optimizer_state_dict': self.optimizer.state_dict(),
-                            'scaler_state_dict': self.scaler.state_dict(),
-                            'scheduler_state_dict': self.scheduler.state_dict(),
-                        }, checkpoint_path.format(epoch, f"stage{stage}"))
-
-    def plot_losses(self, train_losses, val_losses, stage=1, epoch=0):
+    def plot_losses(self, train_losses, val_losses, stage=2, epoch=0):
         # Flatten the nested lists
         train_losses = [item for sublist in train_losses for item in sublist]
         val_losses = [item for sublist in val_losses for item in sublist]
@@ -205,52 +142,18 @@ class Trainer:
         # Add regression lines
 
         ax.plot(train_losses, label="Train")
-        ax.plot(val_loss_x, val_losses, label="Validation")  # Use the shifted x values for the validation loss curve
+        ax.plot(val_loss_x, val_losses, label="Validation",color=self.colors[epoch])  # Use the shifted x values for the validation loss curve
         ax.set_title(f"Stage {stage} Epoch {epoch} Losses")
         ax.set_xlabel("Batch")
         ax.set_ylabel("Loss")
         sns.regplot(x=np.arange(len(train_losses)), y=train_losses, ax=ax, label="Train RegLine", color='blue',
-                    scatter=False, order=3)
-        sns.regplot(x=val_loss_x, y=val_losses, ax=ax, label="Validation RegLine", color='orange', scatter=False,
-                    order=3)
+                    scatter=False, order=5)
+        # choose a color for the validation loss curve based on the epoch number
+        sns.regplot(x=val_loss_x, y=val_losses, ax=ax, label="Validation RegLine", color="orange", scatter=False,
+                    order=5)
         ax.legend()
-        plt.savefig(f"hn_d{stage}_epoch{epoch}.png")
+        plt.savefig(f"efifv2rws{stage}_epoch{epoch}.png")
         plt.close()
-
-    def infer_s1_driver(self, dataloder):
-        self.model.eval()
-        with torch.no_grad():
-            for batch, (images_stacked_masked, z, z_vecs, names) in enumerate(dataloder):
-                if type(z) == type(None):
-                    continue
-                images_stacked_masked = images_stacked_masked.to(self.device)
-                z = z.to(self.device)
-
-                # Mixed precision validation
-                Z = self.model.forward_s1(images_stacked_masked)
-                val_loss = self.model.loss_Z(Z, z)
-
-                # print raw outputs for comparison side by side
-                for hat, gt in zip(Z, z):
-                    print(hat.item(), gt.item())
-                print(val_loss)
-                break
-
-    def infer_s2_driver(self, dataloader):
-        self.model.eval()
-        with torch.no_grad():
-            for batch, (images_stacked_masked, z, z_vecs, names) in enumerate(dataloader):
-                if type(z) == type(None):
-                    continue
-                images_stacked_masked = images_stacked_masked.to(self.device)
-                z = z.to(self.device)
-                z_vecs = z_vecs.to(self.device)
-
-                # Mixed precision validation
-                weights, Z = self.model.forward_s2(images_stacked_masked)
-                val_loss = self.model.loss_W(weights, Z, z_vecs, z)
-                print(val_loss)
-                break
 
     def load_checkpoint(self, path):
         checkpoint = torch.load(path)
@@ -264,29 +167,57 @@ class Trainer:
         return epoch
 
 
-def s1_train():
-    # Modify these lines to use your custom dataloader
-    base_path = pathlib.Path(__file__).parent.absolute()
-    coco_path = base_path.joinpath('COCO_TEST')
-    channels = [1, 3, 4, 5]
 
-    train_dataloader, val_dataloader = createDataLoader(coco_path, batchsize=2, channels=channels, num_workers=3,
-                                                        shuffle=True)
 
-    model = PoseEstimationModel(len(channels))
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=0.0001)
+class DampedCosineScheduler:
+    def __init__(self, optimizer, base_lr, max_lr, base_decay_factor, decay_factor, steps_per_epoch, num_epochs):
+        self.optimizer = optimizer
+        self.base_lr = base_lr
+        self.max_lr = max_lr
+        self.base_decay_factor = base_decay_factor
+        self.decay_factor = decay_factor
+        self.steps_per_epoch = steps_per_epoch
+        self.num_epochs = num_epochs
+        self.current_step = 0
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
+        # Initialize the ReduceLROnPlateau scheduler
+        self.reduce_plateau = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=2,
+                                                                         verbose=True, threshold=1e-4,
+                                                                         threshold_mode='rel', cooldown=0, min_lr=0,
+                                                                         eps=1e-8)
 
-    scaler = GradScaler()
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=1, verbose=True,
-                                                           min_lr=0.000001)
+    def step(self):
+        self.current_step += 1
+        epoch = self.current_step // self.steps_per_epoch
+        step_in_epoch = self.current_step % self.steps_per_epoch
 
-    trainer = Trainer(model, train_dataloader, val_dataloader, optimizer, device, scaler, scheduler)
-    num_epochs = 20
-    save_path = "pose_estimation_model_M_{}_{}.pth"
-    trainer.train(num_epochs, checkpoint_path=save_path)
+        # Calculate the current high value of the learning rate
+        current_max_lr = self.max_lr * (self.decay_factor ** epoch)
+
+        # Calculate the current low value of the learning rate
+        current_base_lr = self.base_lr * (self.base_decay_factor ** epoch)
+
+        # Calculate the learning rate using a cosine transition between the high and low values
+        lr = current_base_lr + 0.5 * (current_max_lr - current_base_lr) * (
+                1 + np.cos(np.pi * step_in_epoch / self.steps_per_epoch))
+
+        # Update the learning rate
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = lr
+
+    def update_lr_on_plateau(self, val_loss):
+        # Simulate the call to step() with the current validation loss
+        self.reduce_plateau.step(val_loss)
+
+        # Update the base_lr and max_lr with the reduced learning rate
+        factor = self.reduce_plateau.factor
+        print(f"Reducing learning rate by a factor of {factor}")
+        for param_group in self.optimizer.param_groups:
+            current_lr = param_group['lr']
+            new_lr = current_lr * factor
+            self.base_lr = self.base_lr * factor
+            self.max_lr = self.max_lr * factor
+            param_group['lr'] = new_lr
 
 
 def s2_train():
@@ -294,42 +225,49 @@ def s2_train():
     base_path = pathlib.Path(__file__).parent.absolute()
     coco_path = base_path.joinpath('COCO_TEST')
     channels = [0, 1, 2, 5]
+    gray = True
 
-    train_dataloader, val_dataloader = createDataLoader(coco_path, batchsize=8, channels=channels, num_workers=8,
-                                                        shuffle=True)
+    train_dataloader, val_dataloader = createDataLoader(coco_path, batchsize=5, channels=channels, num_workers=6,
+                                                        shuffle=True, gray=gray)
 
-    model = PoseEstimationModel(len(channels))
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.00025, weight_decay=0.0001)
+    model = PoseEstimationModel(len(channels) - 2 if gray else len(channels))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
-    num_epochs = 25
+    num_epochs = 10
     scaler = GradScaler()
-    max_lr = 0.005
-    total_steps = num_epochs * len(train_dataloader)
-    pct_start = 0.2  # Percentage of steps for the increasing phase
-    anneal_strategy = 'cos'  # Can be 'linear' or 'cos'
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr, total_steps=total_steps,
-                                                    pct_start=pct_start, anneal_strategy=anneal_strategy,
-                                                    cycle_momentum=True, base_momentum=0.85, max_momentum=0.95)
+
+    # Set the base and max learning rates
+    base_lr = 0.0005
+    max_lr = 0.0005
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=base_lr, weight_decay=0.0001)
+
+    # Initialize the DampedCosineScheduler with decay factors for both base and max learning rates
+    # scheduler = DampedCosineScheduler(optimizer, base_lr=base_lr, max_lr=max_lr,
+    #                                   decay_factor=0.5, base_decay_factor=0.7,
+    #                                   steps_per_epoch=len(train_dataloader), num_epochs=num_epochs)
+
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=2,
+                                                                         verbose=True, threshold=1e-4,
+                                                                         threshold_mode='rel', cooldown=0, min_lr=0,
+                                                                         eps=1e-8)
 
     trainer = Trainer(model, train_dataloader, val_dataloader, optimizer, device, scaler, scheduler)
-    #trainer.load_checkpoint("pose_estimation_model_VT175_5_stage2.pth")
+    # trainer.load_checkpoint("pose_estimation_model_VT175_5_stage2.pth")
     # trainer.scheduler.pct_start = 0.1
 
-
-    save_path = "hn_d_{}_{}.pth"
+    save_path = "v2s_idknaymore_{}_{}.pth"
 
     trainer.train(num_epochs, checkpoint_path=save_path, stage=2)
 
     torch.save({
-        'epoch': 75,
+        'epoch': "full",
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'scaler_state_dict': scaler.state_dict(),
-        'scheduler_state_dict': scheduler.state_dict(),
-    }, "hn_d_{}_{}.pth".format(2, 75))
-
+        # 'scheduler_state_dict': scheduler.state_dict(),
+    }, "full.pth")
 
 
 if __name__ == '__main__':
