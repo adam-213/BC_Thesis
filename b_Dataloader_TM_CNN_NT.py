@@ -1,9 +1,12 @@
 import os
 import pathlib
-
+import random
+import random
 import cv2
 import numpy as np
 import torch
+import torchvision.transforms
+import torchvision.transforms.functional
 from pycocotools import mask as coco_mask
 from torch.utils.data import DataLoader
 from torchvision.datasets import CocoDetection
@@ -11,6 +14,9 @@ import matplotlib.pyplot as plt
 from matplotlib import patches
 from torch.utils.data import DataLoader, Subset, random_split
 from scipy.spatial.transform import Rotation
+from torchvision.transforms import transforms as T
+from PIL import Image
+import torchvision.transforms.functional as F
 
 
 # Custom loader is needed to load RGB-A images - (4 channels) which in my case are RGB-D images
@@ -134,7 +140,7 @@ def prepare_masks(target):
         inst_masks = torch.nn.utils.rnn.pad_sequence(inst_masks, batch_first=True, padding_value=0)
     except RuntimeError as e:
         print("Error: ", e)
-        return None,None
+        return None, None
         print("inst_masks: ", inst_masks)
         raise e
 
@@ -225,7 +231,7 @@ def prepare_targets(targets) -> list:
 
 def prepare_batch(batch):
     images, targets = zip(*batch)
-    images,targets = zip(*[(image , target) for image,target in zip(images,targets) if len(target) != 0 ])
+    images, targets = zip(*[(image, target) for image, target in zip(images, targets) if len(target) != 0])
 
     # Stack images  on first dimension to get a tensor of shape (batch_size, C, H, W)
     batched_images = torch.stack(images, dim=0).permute(0, 3, 1, 2)
@@ -261,7 +267,6 @@ def collate_TM_GT(batch, channels=None, gray=True):
         images = torch.cat((torch.nn.functional.avg_pool2d(images[:, 0:1, :, :], 3, stride=1, padding=1),
                             images[:, 1:, :, :]), dim=1)
         images = torch.nn.functional.avg_pool2d(images, 3, stride=1, padding=1)
-
 
     moves = [target['move'] for target in targets]
     # Get the Z translation for prediction as XY can be predicted from the mask
@@ -446,7 +451,7 @@ def collate_TM_GT(batch, channels=None, gray=True):
     # Normalize the z_vec_batch tensor
     z_vecs_stacked = z_vecs_stacked / magnitude
 
-    #cut = 30
+    # cut = 30
     # if zs_stacked.shape[0] > cut:
     #     images_stacked_masked = images_stacked_masked[:cut]
     #     zs_stacked = zs_stacked[:cut]
@@ -455,7 +460,23 @@ def collate_TM_GT(batch, channels=None, gray=True):
 
     # append 0 to the last position of the z_vecs_stacked to get shape (batch_size, 4)
     # z_vecs_stacked = torch.cat((z_vecs_stacked, torch.zeros(z_vecs_stacked.shape[0], 1)), dim=1)
+    # rotatae each emage in the batch by a random angle
 
+    # Create a list of rotated images - not a good idea
+    # rotated_images = []
+    # for i in range(images_stacked_masked.shape[0]):
+    #     # Extract the i-th image from the batch
+    #     image = images_stacked_masked[i, :, :, :]
+    #     angle = random.randint(0, 360)
+    #
+    #     # Apply a random rotation to the image
+    #     rotated_image = F.rotate(image, angle)
+    #
+    #     # Add the rotated image to the list
+    #     rotated_images.append(rotated_image)
+    #
+    # # Stack the rotated images into a new tensor
+    # images_stacked_rotated = torch.stack(rotated_images, dim=0)
     stack = (images_stacked_masked, zs_stacked, z_vecs_stacked, names, XYZs_stacked.type(torch.float32))
     return stack
 
@@ -492,7 +513,7 @@ class CollateWrapper:
 
 def createDataLoader(path, batchsize=1, shuffle=True, num_workers=4, channels: list = None, split=0.9, gray=False):
     ano_path = (path.joinpath('annotations', "merged_coco_maskrcnn.json"))
-    #ano_path = (path.joinpath('annotations', "merged_coco.json"))
+    # ano_path = (path.joinpath('annotations', "merged_coco.json"))
 
     collate = CollateWrapper(channels, gray=gray)
 
@@ -500,7 +521,7 @@ def createDataLoader(path, batchsize=1, shuffle=True, num_workers=4, channels: l
     dataset = CustomCocoDetection(root=str(path), annFile=str(ano_path))
 
     # subset the dataset
-    #dataset = Subset(dataset, range(0, 300))
+    # dataset = Subset(dataset, range(0, 300))
 
     # Calculate the lengths of the train and validation sets
     train_len = int(len(dataset) * split)

@@ -5,6 +5,7 @@ import torch.nn as nn
 import timm
 import math
 import numpy as np
+import torch.nn.functional as F
 
 from matplotlib import pyplot as plt
 
@@ -13,31 +14,48 @@ def _init_layer(layer):
     if isinstance(layer, nn.Linear):
         nn.init.kaiming_normal_(layer.weight)
         nn.init.zeros_(layer.bias)
+class CustomLoss(nn.Module):
+    def __init__(self, alpha=0.5):
+        super().__init__()
+        self.alpha = alpha
+        self.cosine_similarity = nn.CosineSimilarity(dim=1, eps=1e-6)
+        self.mse_loss = nn.MSELoss()
 
+    def forward(self, pred, target):
+        # Normalize the predicted vectors
+        try:
+            pred_norm = F.normalize(pred, p=2, dim=1)
+        except Exception as e:
+            print(e)
+            print(pred.shape, "pred")
+            pass
+
+        cos_sim_loss = 1 - self.cosine_similarity(pred_norm, target)
+        l2_loss = self.mse_loss(pred_norm, target)
+
+        # Weighted combination of the cosine similarity and L2 losses
+        combined_loss = self.alpha * cos_sim_loss + (1 - self.alpha) * l2_loss
+        return torch.mean(combined_loss)
 
 class PoseEstimationModel(nn.Module):
     def __init__(self, num_channels=7):
         super(PoseEstimationModel, self).__init__()
         self.workround = False
 
-        self.Wloss = nn.CosineSimilarity(dim=1, eps=1e-6)
+        self.Wloss = CustomLoss()
 
-        self.backbone = timm.create_model("resnetv2_50d", pretrained=False, in_chans=num_channels)
+        self.backbone = timm.create_model("mobilevitv2_150", pretrained=False, in_chans=num_channels)
         self.backbone.classifier = nn.Identity()
 
         self.W_head = nn.Sequential(
-            nn.Linear(1000 + 3, 8192),
-            nn.BatchNorm1d(8192),
+            nn.Linear(1000 + 3, 4096),
+            nn.BatchNorm1d(4096),
             nn.LeakyReLU(0.25),
             nn.Dropout(0.5),
-            nn.Linear(8192, 4096),
-            nn.BatchNorm1d(4096),
-            nn.LeakyReLU(0.2),
-            nn.Dropout(0.4),
             nn.Linear(4096, 2048),
             nn.BatchNorm1d(2048),
-            nn.LeakyReLU(0.15),
-            nn.Dropout(0.3),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(0.4),
             nn.Linear(2048, 512 + 128),
             nn.BatchNorm1d(512 + 128),
             nn.LeakyReLU(0.15),
@@ -75,7 +93,6 @@ class PoseEstimationModel(nn.Module):
 
     def loss_W(self, hat_W, gt_W, img=None, XYZ=None, batchepoch=(0, 0)):
 
-
         magnitude = torch.sqrt(torch.sum(hat_W ** 2, dim=1)).view(-1, 1)
 
         hat_W = hat_W / magnitude
@@ -96,7 +113,7 @@ class PoseEstimationModel(nn.Module):
                 for i in range(hat_w.shape[0]):
                     print(hat_w[i].tolist(), gt_w[i].tolist())
 
-                Img = Img[:,:1, :, :]
+                Img = Img[:, :1, :, :]
 
                 for img_index in range(Img.shape[0]):
                     cur_img = Img[img_index]
@@ -127,11 +144,11 @@ class PoseEstimationModel(nn.Module):
                     fig.savefig(f"xx_hn_d{batchepoch[1]}_{batchepoch[0]}_{img_index}.png")
                     plt.close(fig)
         except Exception as e:
-            print("wtf",e)
+            print("wtf", e)
 
         if self.workround:
-            hat_W = hat_W[0]
-            gt_W = gt_W[0]
+            hat_W = hat_W[:1]
+            gt_W = gt_W[:1]
             self.workround = False
 
         wloss = self.Wloss(hat_W, gt_W)

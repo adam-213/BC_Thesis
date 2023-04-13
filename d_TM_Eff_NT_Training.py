@@ -14,6 +14,7 @@ import numpy as np
 import seaborn as sns
 from b_Dataloader_TM_CNN_NT import createDataLoader
 from c_TM_Eff_NT import PoseEstimationModel
+from C_TM_REN import REN
 
 
 class Trainer:
@@ -227,10 +228,11 @@ def s2_train():
     channels = [0, 1, 2, 5]
     gray = True
 
-    train_dataloader, val_dataloader = createDataLoader(coco_path, batchsize=5, channels=channels, num_workers=6,
+    train_dataloader, val_dataloader = createDataLoader(coco_path, batchsize=8, channels=channels, num_workers=8,
                                                         shuffle=True, gray=gray)
 
-    model = PoseEstimationModel(len(channels) - 2 if gray else len(channels))
+    #model = PoseEstimationModel(len(channels) - 2 if gray else len(channels))
+    model = REN(len(channels) - 2 if gray else len(channels))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
@@ -238,7 +240,7 @@ def s2_train():
     scaler = GradScaler()
 
     # Set the base and max learning rates
-    base_lr = 0.0005
+    base_lr = 0.00025
     max_lr = 0.0005
 
     optimizer = torch.optim.Adam(model.parameters(), lr=base_lr, weight_decay=0.0001)

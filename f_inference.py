@@ -62,7 +62,7 @@ def prepare_inference():
     channels = [0, 1, 2, 3, 4, 5, 9]
     chans_sel = [0, 1, 2, 5, 6]
     # create unshuffled dataloaders
-    rcdata, val_dataloader, stats = rcdataloader(coco_path, 1, channels=channels, shuffle=True)
+    rcdata, val_dataloader, stats = rcdataloader(coco_path, 1, channels=channels, shuffle=True, num_workers=0)
     mean, std = stats
     mean, std = np.array(mean), np.array(std)
     # cut out the channels we don't need
@@ -200,7 +200,7 @@ def translation_layer(best, image):
     plt.title("MRCNN_Results + Computed Centroid")
     plt.show()
 
-    return masked_image_cropped, (centroid_x, centroid_y, depth_value), (0)
+    return masked_image_cropped, (centroid_x, centroid_y, depth_value), (x1, y1, x2, y2)
 
 
 def vis_mask(rcimags, best, XY):
@@ -257,6 +257,42 @@ def viz_dir(hat_W, img, XYZ):
         plt.show()
 
 
+def pnp_test(rgb, xyz, cut):
+    # Set up the camera intrinsic parameters
+    xyz = xyz[:, :, int(cut[1]):int(cut[3]), int(cut[0]):int(cut[2])]
+    intrinsics = {
+        'fx': 1181.077335,
+        'fy': 1181.077335,
+        'cx': 516.0,
+        'cy': 386.0
+    }
+    camera_matrix = np.array([[intrinsics['fx'], 0, intrinsics['cx']],
+                              [0, intrinsics['fy'], intrinsics['cy']],
+                              [0, 0, 1]])
+    dist_coeffs = np.zeros((4, 1))
+    # Find the chessboard corners
+    # Distortion coefficients (you should use the values from your specific camera)
+    dist_coeffs = np.zeros(4, dtype=np.float32)
+
+    def project_points(xyz, camera_matrix):
+        # Project 3D points to 2D image plane
+        projected_points, _ = cv2.projectPoints(xyz, np.zeros(3), np.zeros(3), camera_matrix, np.zeros(4))
+        return projected_points.reshape(-1, 2)
+
+    # Estimate the pose using PnP
+    xyz_reshaped = xyz.reshape(-1, 3)
+    xyz_reshaped = xyz_reshaped.detach().numpy()
+    points = project_points(xyz_reshaped, camera_matrix)
+
+    # to numpy
+
+    _, rvec, tvec = cv2.solvePnP(xyz_reshaped, points, camera_matrix, dist_coeffs)
+
+    # Convert rotation vector to rotation matrix
+    rotation_matrix, _ = cv2.Rodrigues(rvec)
+    print("Rotation matrix: ", rotation_matrix)
+
+
 import pathlib
 
 if __name__ == '__main__':
@@ -265,33 +301,38 @@ if __name__ == '__main__':
     # get data from dataloader for maskrcnn
     rcdataiter = iter(rcdata)
     rcimages, rctargets = next(rcdataiter)
+    rcimages, rctargets = next(rcdataiter)
+    # rcimages, rctargets = next(rcdataiter)
     ptc = rcimages[:, [3, 4, 5], :, :]
     rcimages = rcimages[:, [0, 1, 2, 5, 6], :, :]
     rcimages = rcimages.to(device)
+    print(rctargets[0]['tm'])
 
     best = infer_mrcnn(rcmodel, rcimages)
 
     masked_image_cropped, XYZ, world_coords = translation_layer(best, rcimages)
+
     # plt.imshow(masked_image_cropped[0, :3, :, :].permute(1, 2, 0).detach().numpy())
     # plt.show()
 
-    masked_image_cropped = torch.nn.functional.avg_pool2d(masked_image_cropped, 3, stride=1, padding=1)
+    pnp_test(masked_image_cropped.clone(), ptc, world_coords)
+    masked_image_cropped = torch.nn.functional.avg_pool2d(masked_image_cropped, 3,
+                                                          stride=1, padding=1)
 
-    #vis_mask(rcimages, best, XYZ)
+    # vis_mask(rcimages, best, XYZ)
 
     # pass the data through the pose estimation network
     XYZ = torch.Tensor(XYZ).unsqueeze(0).to(device)
 
-    stackedimg = torch.cat(([masked_image_cropped] * 4), dim=0)
-    stackedxyz = torch.cat(([XYZ] * 4), dim=0)
+    # stackedimg = torch.cat(([masked_image_cropped] * 4), dim=0)
+    # stackedxyz = torch.cat(([XYZ] * 4), dim=0)
 
-    tmoutputs = tmmodel(stackedimg, stackedxyz)
-    # tmoutputs = tmmodel(masked_image_cropped, XYZ)
+    # tmoutputs = tmmodel(stackedimg, stackedxyz)
+    tmoutputs = tmmodel(masked_image_cropped, XYZ)
 
     # get the predicted pose
-    for i in range(4):
-        print("Predicted pose: ", tmoutputs[i].detach().numpy())
+    print("Predicted pose: ", tmoutputs[0].detach().numpy())
 
-        # visualize the predicted pose
-        viz_dir(tmoutputs[i], masked_image_cropped, XYZ)
-        print("Time taken: ", time.time() - t)
+    # visualize the predicted pose
+    viz_dir(tmoutputs[0], masked_image_cropped, XYZ)
+    print("Time taken: ", time.time() - t)
