@@ -17,6 +17,7 @@ from scipy.spatial.transform import Rotation
 from torchvision.transforms import transforms as T
 from PIL import Image
 import torchvision.transforms.functional as F
+import math
 
 
 # Custom loader is needed to load RGB-A images - (4 channels) which in my case are RGB-D images
@@ -230,8 +231,15 @@ def prepare_targets(targets) -> list:
 
 
 def prepare_batch(batch):
-    images, targets = zip(*batch)
-    images, targets = zip(*[(image, target) for image, target in zip(images, targets) if len(target) != 0])
+    if len(batch) == 0:
+        return None, None
+    try:
+        images, targets = zip(*batch)
+        images, targets = zip(*[(image, target) for image, target in zip(images, targets) if len(target) != 0])
+    except Exception as e:
+        print("Error: ", e)
+        print("Batch: ", batch)
+        return None, None
 
     # Stack images  on first dimension to get a tensor of shape (batch_size, C, H, W)
     batched_images = torch.stack(images, dim=0).permute(0, 3, 1, 2)
@@ -346,10 +354,15 @@ def collate_TM_GT(batch, channels=None, gray=True):
         XYZs = []
         w, h = max_bbox_exp[2] - max_bbox_exp[0], max_bbox_exp[3] - max_bbox_exp[1]
         w, h = w // 2, h // 2
+        # get max of w and h, to make sure that the crop is square, this could prove beneficial
+       #w, h = max(w, h), max(w, h)
+        #w, h = max(w, 224), max(h, 224)
+        # pad w,h to be divisible by 16
+        #w, h = w + (16 - w % 16), h + (16 - h % 16)
         for j in range(len(image_masks)):
             img = image_masks[j]
             xyt = xy[j]
-            zt = z[j].item()
+            zt = z[j].item()  # fixed with the fact that i didn't normalize the input depth map
             world_coords = (xyt[0], xyt[1], zt)
             world_coords = list(map(float, world_coords))
             # convert to image coordinates
@@ -357,9 +370,9 @@ def collate_TM_GT(batch, channels=None, gray=True):
             XYZ = np.array([X, Y, zt])
             XYZs.append(XYZ)
             # compute the crop coordinates
-            x1, y1, x2, y2 = int(X - w), int(Y - h), int(X + w), int(Y + h)
+            x1, y1, x2, y2 = map(int, map(math.floor, (X - w, Y - h, X + w, Y + h)))
 
-            # Calculate the padding required for each side
+            # # Calculate the padding required for each side
             pad_top = max(-y1, 0)
             pad_bottom = max(y2 - img.shape[1], 0)
             pad_left = max(-x1, 0)
@@ -371,7 +384,9 @@ def collate_TM_GT(batch, channels=None, gray=True):
 
             # Clip the coordinates to be within the image boundaries
             x1, y1, x2, y2 = np.clip([x1, y1, x2, y2], a_min=0, a_max=None)
-
+            # img = np.pad(img, ((0, 0), (abs(min(0, y1)), max(0, y2 - img.shape[1])),
+            #                    (abs(min(0, x1)), max(0, x2 - img.shape[2]))), "constant")
+            # crop the image in the xy as the center with size of max_bbox_exp
             # Crop the image using the clipped and padded coordinates
             img = img[:, y1:y2, x1:x2]
 
@@ -446,10 +461,12 @@ def collate_TM_GT(batch, channels=None, gray=True):
                                                                                                 zs_stacked,
                                                                                                 z_vecs_stacked,
                                                                                                 names, XYZs_stacked)
-    magnitude = torch.sqrt(torch.sum(z_vecs_stacked ** 2, dim=1)).view(-1, 1)
-
-    # Normalize the z_vec_batch tensor
-    z_vecs_stacked = z_vecs_stacked / magnitude
+    # normalisation turned off on purpose for trying out the theory that it hurts the performance
+    # it should technically be normalised by default - not sure
+    # magnitude = torch.sqrt(torch.sum(z_vecs_stacked ** 2, dim=1)).view(-1, 1)
+    #
+    # # Normalize the z_vec_batch tensor
+    # z_vecs_stacked = z_vecs_stacked / magnitude
 
     # cut = 30
     # if zs_stacked.shape[0] > cut:
@@ -477,6 +494,9 @@ def collate_TM_GT(batch, channels=None, gray=True):
     #
     # # Stack the rotated images into a new tensor
     # images_stacked_rotated = torch.stack(rotated_images, dim=0)
+
+    # center crop for the vt
+    images_stacked_masked = F.center_crop(images_stacked_masked, (224, 224))
     stack = (images_stacked_masked, zs_stacked, z_vecs_stacked, names, XYZs_stacked.type(torch.float32))
     return stack
 
@@ -512,7 +532,7 @@ class CollateWrapper:
 
 
 def createDataLoader(path, batchsize=1, shuffle=True, num_workers=4, channels: list = None, split=0.9, gray=False):
-    ano_path = (path.joinpath('annotations', "merged_coco_maskrcnn.json"))
+    ano_path = (path.joinpath('annotations', "merged_maskrcnn.json"))
     # ano_path = (path.joinpath('annotations', "merged_coco.json"))
 
     collate = CollateWrapper(channels, gray=gray)

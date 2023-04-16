@@ -19,18 +19,19 @@ from pycocotools import mask as mask_util
 from tqdm import tqdm
 
 base_path = pathlib.Path(__file__).parent.absolute()
-coco_path = base_path.joinpath('COCO_TEST')
+coco_path = base_path.joinpath('CCO_TE')
 channels = [0, 1, 2, 5, 9]
 
-train_dataloader, val_dataloader, stats = createDataLoader(coco_path, bs=1,
-                                                           num_workers=0,
-                                                           channels=channels, split=1,
-                                                           shuffle=False)
+full_loader, stats = createDataLoader(coco_path, bs=1,
+                                      num_workers=0,
+                                      channels=channels,
+                                      shuffle=False,
+                                      dataset_creation=True)
 mean, std = stats
-dataset = train_dataloader.dataset
+dataset = full_loader.dataset
 model = rcModel(5, 5, mean[channels], std[channels])
 
-checkpoint = torch.load("rcnn/RCNN_TM_18.pth")
+checkpoint = torch.load("RCNN_UNSCALED/RCNN_Unscaled_29.pth")
 model.load_state_dict(checkpoint['model_state_dict'])
 model.cuda()
 model.eval()
@@ -38,7 +39,7 @@ model.eval()
 coco_dict = {"images": [], "annotations": []}
 annotation_id = 1
 
-for i, (images, target) in enumerate(tqdm(train_dataloader)):
+for i, (images, target) in enumerate(tqdm(full_loader)):
     # extract the image id and get the file name by id from the dataset
     # done to ensure consistency with the coco dataset and images
     image_id = dataset.coco.imgs[i]["id"]
@@ -46,7 +47,7 @@ for i, (images, target) in enumerate(tqdm(train_dataloader)):
     height = dataset.coco.imgs[image_id]["height"]
     width = dataset.coco.imgs[image_id]["width"]
     lic = dataset.coco.imgs[image_id]["license"]
-    #print(file_name)
+    # print(file_name)
     # add the image to the new coco dict
     coco_dict["images"].append(
         {"id": image_id, "file_name": file_name, "height": height, "width": width, "license": lic})
@@ -82,7 +83,7 @@ for i, (images, target) in enumerate(tqdm(train_dataloader)):
         iou = np.sum(mask * tmask) / np.sum(mask + tmask - mask * tmask)
         if iou > 0.85:
             # the power of maskrcnn produces matches at worst 0.9 iou
-           # print("Matched")
+            # print("Matched")
             mask = mask[0, :, :]
             # treshold the mask otherwise it's a rectangle for some reason /shrug
             mask = mask > 0.75
@@ -104,7 +105,7 @@ for i, (images, target) in enumerate(tqdm(train_dataloader)):
             }
             coco_dict["annotations"].append(annotation)
             annotation_id += 1
-            #plot the results
+            # # plot the results
             # fig, (ax1, ax2) = plt.subplots(1, 2)
             #
             # # convert the image back to the original form
@@ -125,11 +126,11 @@ for i, (images, target) in enumerate(tqdm(train_dataloader)):
             #
             # plt.show()
 
-cocopath = base_path.joinpath('COCO_TEST', 'annotations' )
-with open(cocopath.joinpath("merged_coco.json"), 'r') as f:
+cocopath = base_path.joinpath('CCO_TE', 'annotations')
+with open(cocopath.joinpath("merged.json"), 'r') as f:
     j = json.load(f)
 
 j['images'] = coco_dict['images']
 j['annotations'] = coco_dict['annotations']
-with open(cocopath.joinpath("merged_coco_maskrcnn.json"), 'w') as f:
+with open(cocopath.joinpath("merged_maskrcnn.json"), 'w') as f:
     json.dump(j, f)

@@ -6,7 +6,7 @@ import timm
 import math
 import numpy as np
 import torch.nn.functional as F
-
+import torchvision
 from matplotlib import pyplot as plt
 
 
@@ -14,137 +14,134 @@ def _init_layer(layer):
     if isinstance(layer, nn.Linear):
         nn.init.kaiming_normal_(layer.weight)
         nn.init.zeros_(layer.bias)
+
+
 class CustomLoss(nn.Module):
-    def __init__(self, alpha=0.5):
+    def __init__(self, alpha=0.5, lambda_magnitude=0.1, lambda_range=1.0, use_geodesic_loss=True, beta=0.1):
         super().__init__()
         self.alpha = alpha
-        self.cosine_similarity = nn.CosineSimilarity(dim=1, eps=1e-6)
-        self.mse_loss = nn.MSELoss()
+        self.lambda_magnitude = lambda_magnitude
+        self.lambda_range = lambda_range
+        self.use_geodesic_loss = use_geodesic_loss
+        self.beta = beta
 
-    def forward(self, pred, target):
+    def geodesic_loss(self, u, v):
+        dot_product = torch.sum(u * v, dim=1)
+        norm_u = torch.norm(u, p=2, dim=1)
+        norm_v = torch.norm(v, p=2, dim=1)
+        angle_cosine = dot_product / (norm_u * norm_v)
+        angle_cosine = torch.clamp(angle_cosine, -1.0, 1.0)
+        return torch.acos(angle_cosine)
+
+    def squared_euclidean_loss(self, u, v):
+        return torch.sum((u - v) ** 2, dim=1)
+
+    def MSE(self, u, v):
+        return torch.sum((u - v) ** 2, dim=1)
+
+    def magnitude_regularization(self, u):
+        return torch.abs(torch.norm(u, p=2, dim=1) - 1)
+
+    def range_regularization(self, u):
+        return torch.sum(torch.relu(torch.abs(u) - 1) ** 2)
+
+    def forward(self, pred, target, index=None):
         # Normalize the predicted vectors
-        try:
-            pred_norm = F.normalize(pred, p=2, dim=1)
-        except Exception as e:
-            print(e)
-            print(pred.shape, "pred")
-            pass
+        pred_norm = F.normalize(pred, p=2, dim=1)
 
-        cos_sim_loss = 1 - self.cosine_similarity(pred_norm, target)
-        l2_loss = self.mse_loss(pred_norm, target)
+        # Calculate the main loss (geodesic or squared Euclidean)
+        if self.use_geodesic_loss:
+            main_loss = self.geodesic_loss(pred_norm, target)
+        else:
+            main_loss = self.squared_euclidean_loss(pred_norm, target)
 
-        # Weighted combination of the cosine similarity and L2 losses
-        combined_loss = self.alpha * cos_sim_loss + (1 - self.alpha) * l2_loss
-        return torch.mean(combined_loss)
+        # Calculate the magnitude regularization term
+        mag_reg = self.magnitude_regularization(pred_norm)
+
+        # Calculate the range regularization term
+        range_reg = self.range_regularization(pred_norm)
+
+        mse = self.MSE(pred_norm, target)
+
+        # Weighted combination of the main loss, magnitude regularization, and range regularization
+        combined_loss = self.alpha * main_loss \
+                        + self.lambda_magnitude * mag_reg \
+                        + self.lambda_range * range_reg \
+                        + self.beta * mse
+
+        if index is not None:
+            # Return the loss for a single instance for plotting
+            return combined_loss[index]
+        else:
+            return torch.mean(combined_loss)
+
+
 
 class PoseEstimationModel(nn.Module):
     def __init__(self, num_channels=7):
         super(PoseEstimationModel, self).__init__()
         self.workround = False
 
-        self.Wloss = CustomLoss()
+        self.Wloss = CustomLoss(use_geodesic_loss=True,
+                                alpha=10.0,
+                                lambda_magnitude=0.0,
+                                lambda_range=0.0,
+                                beta=0.1)
+        #self.Wloss = torch.nn.MSELoss()
+        self.input_norm = nn.BatchNorm2d(num_channels)
+        # self.rotation_equivariant_layer = RotationEquivariantLayer(num_channels, mid_channels, num_rotations)
+        self.backbone = timm.create_model("deit3_small_patch16_224", pretrained=False,
+                                          in_chans=num_channels, num_classes=0)
 
-        self.backbone = timm.create_model("mobilevitv2_150", pretrained=False, in_chans=num_channels)
-        self.backbone.classifier = nn.Identity()
+        self.backbone.head = nn.Identity()
 
         self.W_head = nn.Sequential(
-            nn.Linear(1000 + 3, 4096),
+            nn.Linear(384 + 3, 4096),
             nn.BatchNorm1d(4096),
-            nn.LeakyReLU(0.25),
-            nn.Dropout(0.5),
-            nn.Linear(4096, 2048),
-            nn.BatchNorm1d(2048),
-            nn.LeakyReLU(0.2),
-            nn.Dropout(0.4),
-            nn.Linear(2048, 512 + 128),
-            nn.BatchNorm1d(512 + 128),
-            nn.LeakyReLU(0.15),
+            nn.Hardswish(),
+            nn.Dropout(0.3),
+            nn.Linear(4096, 1024),
+            nn.BatchNorm1d(1024),
+            nn.Hardswish(),
             nn.Dropout(0.2),
-            nn.Linear(512 + 128, 256 + 64),
-            nn.LeakyReLU(0.1),
+            nn.Linear(1024, 384),
+            nn.BatchNorm1d(384),
+            nn.Hardswish(),
+            nn.Dropout(0.2),
+            nn.Linear(384, 160),
+            nn.Hardswish(),
             nn.Dropout(0.1),
-            nn.Linear(256 + 64, 3)
+            nn.Linear(160, 3),
+            nn.Tanh()  # normalize to [-1, 1] as the output is a direction vector aka a unit vector
         )
 
         self.W_head.apply(_init_layer)
         self.backbone.apply(_init_layer)
 
     def forward(self, x, XYZ):
-        if x.shape[0] == 1:
-            # workround for batch size 1, as batchnorm does not work with batch size 1
-            x = torch.cat([x, x], dim=0)
-            XYZ = torch.cat([XYZ, XYZ], dim=0)
+        # test if every shape is divisible by 16
+        # if not, pad it
+        #print(x.shape)
+
+        if x.shape[0] <= 1:
+            x = torch.cat((x, x), dim=0)
+            XYZ = torch.cat((XYZ, XYZ), dim=0)
             self.workround = True
         try:
-            features = self.backbone(x)
-        except RuntimeError as e:
+            x = self.layer(self.input_norm, x)
+            backbonex = self.layer(self.backbone, x)
+            x = torch.cat((backbonex, XYZ), dim=1)
+            x = self.layer(self.W_head, x)
+            return x
+        except OverflowError as e:
             print(e)
-            print(x.shape, "X")
             return None
 
-        stacked = torch.cat((features, XYZ), dim=1)
-        try:
-            W = self.W_head(stacked)
-        except RuntimeError as e:
-            print(e)
-            print(stacked.shape, "W")
-            return None
-        return W
-
-    def loss_W(self, hat_W, gt_W, img=None, XYZ=None, batchepoch=(0, 0)):
-
-        magnitude = torch.sqrt(torch.sum(hat_W ** 2, dim=1)).view(-1, 1)
-
-        hat_W = hat_W / magnitude
-        try:
-            if random.random() < 0.005:
-                hat_w = hat_W.cpu()
-                gt_w = gt_W.cpu()
-                img = img.cpu()
-                XYZ = XYZ.cpu()
-
-                hat_W = hat_w.clone().cuda()
-                gt_W = gt_w.clone().cuda()
-
-                hat_w = hat_w.detach().numpy()
-                gt_w = gt_w.detach().numpy()
-                Img = img.detach().numpy()
-                XYZ = XYZ.detach().numpy()
-                for i in range(hat_w.shape[0]):
-                    print(hat_w[i].tolist(), gt_w[i].tolist())
-
-                Img = Img[:, :1, :, :]
-
-                for img_index in range(Img.shape[0]):
-                    cur_img = Img[img_index]
-                    cur_img = np.transpose(cur_img, (1, 2, 0))
-
-                    fig, ax = plt.subplots(figsize=(10, 10))
-                    ax.imshow(cur_img)
-
-                    start = np.array([cur_img.shape[1] // 2, cur_img.shape[0] // 2])
-
-                    scaling_factor = 100
-                    end_hat_w = start + scaling_factor * np.array([hat_w[img_index][0], hat_w[img_index][1]])
-                    end_gt_w = start + scaling_factor * np.array([gt_w[img_index][0], gt_w[img_index][1]])
-
-                    # Create a set of points along the line for hat_w and gt_w
-                    num_points = 100
-                    points_hat_w = np.linspace(start, end_hat_w, num_points)
-                    points_gt_w = np.linspace(start, end_gt_w, num_points)
-
-                    # Plot hat_w line in green
-                    for i in range(num_points - 1):
-                        ax.plot(points_hat_w[i:i + 2, 0], points_hat_w[i:i + 2, 1], '_', color='g', alpha=0.2)
-
-                    # Plot gt_w line in blue
-                    for i in range(num_points - 1):
-                        ax.plot(points_gt_w[i:i + 2, 0], points_gt_w[i:i + 2, 1], '_', color='b', alpha=0.2)
-
-                    fig.savefig(f"xx_hn_d{batchepoch[1]}_{batchepoch[0]}_{img_index}.png")
-                    plt.close(fig)
-        except Exception as e:
-            print("wtf", e)
+    def loss_W(self, hat_W, gt_W, *plotargs):
+        # normalisation, but im not sure if its helping or hurting
+        # magnitude = torch.sqrt(torch.sum(hat_W ** 2, dim=1)).view(-1, 1)
+        # hat_W = hat_W / magnitude
+        if random.random() < 0.001: self.plot(hat_W, gt_W, *plotargs)
 
         if self.workround:
             hat_W = hat_W[:1]
@@ -153,3 +150,62 @@ class PoseEstimationModel(nn.Module):
 
         wloss = self.Wloss(hat_W, gt_W)
         return wloss
+
+    def layer(self, func, *data):
+        try:
+            return func(*data)
+        except RuntimeError as e:
+            print(e)
+            raise OverflowError
+
+    def plot(self, hat_W, gt_W, img, XYZ, batchepoch=(0, 0)):
+        try:
+            hat_w = hat_W.cpu()
+            gt_w = gt_W.cpu()
+            img = img.cpu()
+            XYZ = XYZ.cpu()
+
+            hat_W = hat_w.clone().cuda()
+            gt_W = gt_w.clone().cuda()
+
+            hat_w = hat_w.detach().numpy()
+            gt_w = gt_w.detach().numpy()
+            Img = img.detach().numpy()
+            XYZ = XYZ.detach().numpy()
+            for i in range(hat_w.shape[0]):
+                print(hat_w[i].tolist(), gt_w[i].tolist())
+
+            Img = Img[:, :1, :, :]
+
+            for img_index in range(Img.shape[0]):
+                cur_img = Img[img_index]
+                cur_img = np.transpose(cur_img, (1, 2, 0))
+
+                fig, ax = plt.subplots(figsize=(10, 10))
+                ax.imshow(cur_img)
+
+                # start = XYZ[img_index][:2]
+                # center of the image, is not the same as XY - # TODO check this in the inference
+                start = np.array([cur_img.shape[1] // 2, cur_img.shape[0] // 2])
+                scaling_factor = 100
+                end_hat_w = start + scaling_factor * np.array([hat_w[img_index][0], hat_w[img_index][1]])
+                end_gt_w = start + scaling_factor * np.array([gt_w[img_index][0], gt_w[img_index][1]])
+
+                # Create a set of points along the line for hat_w and gt_w
+                num_points = 100
+                points_hat_w = np.linspace(start, end_hat_w, num_points)
+                points_gt_w = np.linspace(start, end_gt_w, num_points)
+
+                # Plot hat_w line in green
+                for i in range(num_points - 1):
+                    ax.plot(points_hat_w[i:i + 2, 0], points_hat_w[i:i + 2, 1], '-', color='g', alpha=0.5)
+
+                # Plot gt_w line in blue
+                for i in range(num_points - 1):
+                    ax.plot(points_gt_w[i:i + 2, 0], points_gt_w[i:i + 2, 1], '+', color='b', alpha=0.5)
+                loss_value = self.Wloss(hat_W[img_index:img_index + 1], gt_W[img_index:img_index + 1], index=0)
+                ax.set_title(f"{loss_value}")
+                fig.savefig(f"xx_hn_d{batchepoch[1]}_{batchepoch[0]}_{img_index}.png")
+                plt.close(fig)
+        except Exception as e:
+            print("wtf", e)

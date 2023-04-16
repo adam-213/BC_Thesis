@@ -9,10 +9,8 @@ from a_preprocess_utils import is_mask_good
 def create_image_json(shape, image_id):
     image = {}
     image["id"] = image_id
-    # changed this because the image is actaully a 3d array with dept hebing first dimension
-    # so 1 0 to 2 1
-    image["width"] = shape[2]
-    image["height"] = shape[1]
+    image["width"] = shape[1]
+    image["height"] = shape[0]
     image["file_name"] = "train" + "/" + str(image_id) + ".npz"
     image["license"] = 1
     return image
@@ -68,13 +66,13 @@ def create_annotations_json(labels, labels_info, tm, image_id, bin_transform, ca
             # TODO consider adding the following for instances where area is less than x
             # ann["iscrowd"] = 0 # not needed
             annotations.append(anotation)
-            box = anotation["bbox"]
-            # ploat masks and bbox
-            import matplotlib.pyplot as plt
-            fig, ax = plt.subplots(1, 1, figsize=(8, 6))
-            ax.imshow(mask)
-            ax.add_patch(plt.Rectangle((box[0], box[1]), box[2], box[3], fill=False, edgecolor='red', linewidth=3))
-            plt.show()
+            # box = anotation["bbox"]
+            # # ploat masks and bbox
+            # import matplotlib.pyplot as plt
+            # fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+            # ax.imshow(mask)
+            # ax.add_patch(plt.Rectangle((box[0], box[1]), box[2], box[3], fill=False, edgecolor='red', linewidth=3))
+            # plt.show()
 
     # after testing, it appears that this annotations array needs to be flattened to be in the correct format
     # but more things depend on this format, so I'll do it when writing the json file

@@ -49,8 +49,7 @@ class Trainer:
 
             self.plot_losses(total_loss_list, loss_dict_list, epoch, idx, len(self.train_dataloader))
 
-            if self.scheduler and idx % 200 and idx != 0:
-                self.scheduler.step()
+            self.scheduler.step()
 
         return total_loss_list
 
@@ -126,10 +125,10 @@ class Trainer:
 
 def main():
     base_path = pathlib.Path(__file__).parent.absolute()
-    coco_path = base_path.joinpath('COCO_TEST')
+    coco_path = base_path.joinpath('CCO_TE')
     channels = [0, 1, 2, 5, 9]
 
-    train_dataloader, val_dataloader, stats = createDataLoader(coco_path, 4, channels=channels)
+    train_dataloader, val_dataloader, stats = createDataLoader(coco_path, 4, channels=channels,split=0.9)
     mean, std = stats
     mean, std = mean[channels], std[channels]
 
@@ -142,15 +141,15 @@ def main():
     scaler = GradScaler()
     batches_per_epoch = len(train_dataloader)
     batches_per_cycle = 200
-    num_epochs = 100
+    num_epochs = 30
     T_max = batches_per_epoch * num_epochs // batches_per_cycle
     eta_min = 1e-6
     scheduler = CosineAnnealingLR(optimizer, T_max=T_max, eta_min=eta_min)
 
     trainer = Trainer(model, train_dataloader, val_dataloader, optimizer, device, scaler, scheduler)
     # just so it runs basically forever, you can stop it whenever you want - checkpoints are saved every epoch
-    save_path = "RCNN_TM_{}.pth"
-    trainer.train(num_epochs * 2, save_path)
+    save_path = "RCNN_Unscaled_{}.pth"
+    trainer.train(num_epochs, save_path)
 
 
 if __name__ == '__main__':

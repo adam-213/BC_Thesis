@@ -14,6 +14,7 @@ import numpy as np
 import cv2
 import matplotlib.pyplot as plt
 
+import torchvision
 # Set up the camera intrinsic parameters
 intrinsics = {
     'fx': 1181.077335,
@@ -58,11 +59,12 @@ def image_to_world_coords(image_coords, intrinsics, Z):
 
 def prepare_inference():
     base_path = pathlib.Path(__file__).parent.absolute()
-    coco_path = base_path.joinpath('COCO_TEST')
+    coco_path = base_path.joinpath('CCO_TE')
     channels = [0, 1, 2, 3, 4, 5, 9]
     chans_sel = [0, 1, 2, 5, 6]
     # create unshuffled dataloaders
-    rcdata, val_dataloader, stats = rcdataloader(coco_path, 1, channels=channels, shuffle=True, num_workers=0)
+    rcdata, val_dataloader, stats = rcdataloader(coco_path, 1, channels=channels, shuffle=True, num_workers=0,
+                                                 anoname="merged.json")
     mean, std = stats
     mean, std = np.array(mean), np.array(std)
     # cut out the channels we don't need
@@ -72,11 +74,11 @@ def prepare_inference():
     rcmodel = rcModel(5, 5, mean, std)
 
     # create models
-    tmmodel = peModel(2)
+    tmmodel = peModel(3)
 
     # load weights
-    tmmodel.load_state_dict(torch.load('full.pth')['model_state_dict'])
-    rcmodel.load_state_dict(torch.load(base_path.joinpath("rcnn", "RCNN_TM_18.pth"))['model_state_dict'])
+    tmmodel.load_state_dict(torch.load('full30.pth')['model_state_dict'])
+    rcmodel.load_state_dict(torch.load(base_path.joinpath("RCNN_UNSCALED", "RCNN_Unscaled_29.pth"))['model_state_dict'])
 
     # set models to eval mode
     tmmodel.eval()
@@ -91,7 +93,8 @@ def prepare_inference():
 
 
 def infer_mrcnn(model, image):
-    rcoutputs = model(image)
+    with torch.no_grad():
+        rcoutputs = model(image)
     # argsort by confidence
     if len(rcoutputs) >= 1:
         mask = rcoutputs[0]["masks"]
@@ -178,33 +181,35 @@ def translation_layer(best, image):
     # image = torch.cat((gs, image[:, 3:, :, :]), dim=1)
 
     # threshold the mask
-    threshold = 0.5
+    threshold = 0.7
     mask[mask > threshold] = 1
     mask[mask <= threshold] = 0
 
     cut = torch.cat(
         (image[:, 0:1, :, :] * 0.2989 + image[:, 1:2, :, :] * 0.5870 + image[:, 2:3, :, :] * 0.1140,
-         image[:, 3:4, :, :]), dim=1)
+         image[:, 3:5, :, :]), dim=1)
+
+    #print(cut.shape)
 
     masked_image = cut * torch.Tensor(mask).unsqueeze(1)
 
     # center crop the image to the bbox
     masked_image_cropped = masked_image[:, :, int(y1):int(y2), int(x1):int(x2)]
-    print((x1, y1), x2 - x1, y2 - y1)
+    #print((x1, y1), x2 - x1, y2 - y1)
     # convert to numpy
     rect = plt.Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False, edgecolor='g', linewidth=3)
     plt.imshow(image[0, :3, :, :].permute(1, 2, 0).detach().numpy())
     plt.imshow(mask.squeeze(0), alpha=0.5)
     plt.gca().add_patch(rect)
     plt.scatter(centroid_x, centroid_y, c='r', s=10)
-    plt.title("MRCNN_Results + Computed Centroid")
+    plt.title(f"MRCNN_Results + Computed Centroid - {depth_value}")
     plt.show()
 
     return masked_image_cropped, (centroid_x, centroid_y, depth_value), (x1, y1, x2, y2)
 
 
 def vis_mask(rcimags, best, XY):
-    fig, ax = plt.subplots(1, 1, figsize=(15, 15))
+    fig, ax = plt.subplots(1, 1, figsize=(25, 25))
     ax.imshow(rcimags[0][:3, :, :].permute(1, 2, 0).detach().numpy())
     # best is just 1 mask in a dict
     mask = best[0]['masks'].detach().numpy()
@@ -214,7 +219,7 @@ def vis_mask(rcimags, best, XY):
     plt.show()
 
 
-def viz_dir(hat_W, img, XYZ):
+def viz_dir(hat_W, img, XYZ, gt_zvec, loss):
     from itertools import permutations
     hat_W = torch.stack([hat_W, hat_W], dim=0)
     magnitude = torch.sqrt(torch.sum(hat_W ** 2, dim=1)).view(-1, 1)
@@ -224,10 +229,9 @@ def viz_dir(hat_W, img, XYZ):
     img = img.cpu()
     XYZ = XYZ.cpu()
 
-    hat_w = hat_w.detach().numpy()[0, :]
-    # add axis with np.newaxis
-    # stack them up
-    hat_w = hat_w[np.newaxis, :]
+    hat_w = hat_w.detach().numpy()[:1, :]
+    gt_w = gt_zvec.detach().numpy()[:, np.newaxis]
+
     Img = img.permute(0, 2, 3, 1).detach().numpy()
     XYZ = XYZ.detach().numpy()
 
@@ -235,24 +239,28 @@ def viz_dir(hat_W, img, XYZ):
 
     for img_index in range(hat_w.shape[0]):
         cur_img = Img[0]
-        # cur_img = np.transpose(cur_img, (1, 2, 0))
 
         fig, ax = plt.subplots(figsize=(10, 10))
         ax.imshow(cur_img[:, :, 0], cmap='gray')
-        ax.set_title('Image with hat_w')
+        ax.set_title(f'Image with hat_w and gt_w - Loss: {loss}')
 
         start = np.array([cur_img.shape[1] // 2, cur_img.shape[0] // 2])
 
         scaling_factor = 100
         end_hat_w = start + scaling_factor * np.array([hat_w[img_index][0], hat_w[img_index][1]])
+        end_gt_w = start + scaling_factor * np.array([gt_w[0][0], gt_w[1][0]])
 
-        # Create a set of points along the line for hat_w and gt_w
         num_points = 100
         points_hat_w = np.linspace(start, end_hat_w, num_points)
+        points_gt_w = np.linspace(start, end_gt_w, num_points)
 
         # Plot hat_w line in green
         for i in range(num_points - 1):
             ax.plot(points_hat_w[i:i + 2, 0], points_hat_w[i:i + 2, 1], '-', color='g', alpha=0.5)
+
+        # Plot gt_w line in red
+        for i in range(num_points - 1):
+            ax.plot(points_gt_w[i:i + 2, 0], points_gt_w[i:i + 2, 1], '-', color='r', alpha=0.5)
 
         plt.show()
 
@@ -295,29 +303,53 @@ def pnp_test(rgb, xyz, cut):
 
 import pathlib
 
+
+def find_match(gt, best):
+    # gt is a list of dicts
+    # best is a list of dicts
+
+    bbox = best[0]['boxes']
+    mask = best[0]['masks']
+
+    for box, tmask, tm in zip(gt[0]['boxes'], gt[0]['masks'], gt[0]['tm']):
+        box = box.type(torch.int32)
+        # box_iou = box_iou(box, bbox)
+
+        intersection = torch.sum(mask * tmask).float()
+        union = torch.sum(mask + tmask - mask * tmask).float()
+        iou = intersection / union
+
+        if iou > 0.8:
+            return tm
+
+
 if __name__ == '__main__':
     rcmodel, tmmodel, rcdata, device = prepare_inference()
     t = time.time()
     # get data from dataloader for maskrcnn
     rcdataiter = iter(rcdata)
     rcimages, rctargets = next(rcdataiter)
-    rcimages, rctargets = next(rcdataiter)
+    # rcimages, rctargets = next(rcdataiter)
     # rcimages, rctargets = next(rcdataiter)
     ptc = rcimages[:, [3, 4, 5], :, :]
     rcimages = rcimages[:, [0, 1, 2, 5, 6], :, :]
     rcimages = rcimages.to(device)
-    print(rctargets[0]['tm'])
+    #print(rctargets[0]['tm'])
 
     best = infer_mrcnn(rcmodel, rcimages)
+    gttm = find_match(rctargets, best)
 
     masked_image_cropped, XYZ, world_coords = translation_layer(best, rcimages)
-
+    print(XYZ)
     # plt.imshow(masked_image_cropped[0, :3, :, :].permute(1, 2, 0).detach().numpy())
     # plt.show()
 
-    pnp_test(masked_image_cropped.clone(), ptc, world_coords)
+    # pnp_test(masked_image_cropped.clone(), ptc, world_coords)
     masked_image_cropped = torch.nn.functional.avg_pool2d(masked_image_cropped, 3,
                                                           stride=1, padding=1)
+    # center crop with 224x224
+    masked_image_cropped = torchvision.transforms.functional.center_crop(masked_image_cropped, (224, 224))
+
 
     # vis_mask(rcimages, best, XYZ)
 
@@ -328,11 +360,16 @@ if __name__ == '__main__':
     # stackedxyz = torch.cat(([XYZ] * 4), dim=0)
 
     # tmoutputs = tmmodel(stackedimg, stackedxyz)
+
     tmoutputs = tmmodel(masked_image_cropped, XYZ)
+    gt_zvec = gttm[:3, 2]
+    print("Ground truth pose: ", gt_zvec.detach().numpy())
+    #print("Predicted pose: ", tmoutputs[:1].detach().numpy())
+    loss = tmmodel.Wloss(tmoutputs[:1, :], gt_zvec.unsqueeze(0).to(device))
 
     # get the predicted pose
-    print("Predicted pose: ", tmoutputs[0].detach().numpy())
+    print("Predicted pose: ", tmoutputs[:1].detach().numpy())
 
     # visualize the predicted pose
-    viz_dir(tmoutputs[0], masked_image_cropped, XYZ)
-    print("Time taken: ", time.time() - t)
+    viz_dir(tmoutputs[0], masked_image_cropped, XYZ, gt_zvec, loss)
+    #print("Time taken: ", time.time() - t)

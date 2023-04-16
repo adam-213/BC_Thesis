@@ -14,7 +14,6 @@ import numpy as np
 import seaborn as sns
 from b_Dataloader_TM_CNN_NT import createDataLoader
 from c_TM_Eff_NT import PoseEstimationModel
-from C_TM_REN import REN
 
 
 class Trainer:
@@ -48,11 +47,16 @@ class Trainer:
                 loss = self.model.loss_W(weights, z_vecs, images_stacked_masked, XYZs, [batch, epoch])
 
             # Scale the gradients
-            self.scaler.scale(loss).backward()
+            try:
+                self.scaler.scale(loss).backward()
+            except Exception as e:
+                print("Error in scaling gradients, skipping batch", e)
+                continue
             # Update the optimizer with the combined gradients
             self.scaler.step(self.optimizer)
             self.scaler.update()
-            #self.scheduler.step()
+
+            self.scheduler.step()
 
             # loss.backward()
             # self.optimizer.step()
@@ -66,7 +70,7 @@ class Trainer:
         return total_loss_list
 
     def val_one_epoch_stage_2(self, epoch):
-        self.model.train()
+        self.model.eval()
         total_val_loss_list = []
 
         with torch.no_grad():
@@ -106,8 +110,8 @@ class Trainer:
             # keep last 4 epochs
             stage2_train_losses = stage2_train_losses[-4:]
             # stage2_val_losses = stage2_val_losses[-4:]
-            #self.scheduler.update_lr_on_plateau(np.mean(s2_loss_val))
-            self.scheduler.step(np.mean(s2_loss_val))
+            # self.scheduler.update_lr_on_plateau(np.mean(s2_loss_val))
+            # self.scheduler.step(np.mean(s2_loss_val))
 
             self.plot_losses(stage2_train_losses, stage2_val_losses, stage=2, epoch=epoch)
 
@@ -143,15 +147,16 @@ class Trainer:
         # Add regression lines
 
         ax.plot(train_losses, label="Train")
-        ax.plot(val_loss_x, val_losses, label="Validation",color=self.colors[epoch])  # Use the shifted x values for the validation loss curve
+        ax.plot(val_loss_x, val_losses, label="Validation",
+                color=self.colors[epoch])  # Use the shifted x values for the validation loss curve
         ax.set_title(f"Stage {stage} Epoch {epoch} Losses")
         ax.set_xlabel("Batch")
         ax.set_ylabel("Loss")
         sns.regplot(x=np.arange(len(train_losses)), y=train_losses, ax=ax, label="Train RegLine", color='blue',
-                    scatter=False, order=5)
+                    scatter=False, order=4)
         # choose a color for the validation loss curve based on the epoch number
         sns.regplot(x=val_loss_x, y=val_losses, ax=ax, label="Validation RegLine", color="orange", scatter=False,
-                    order=5)
+                    order=4)
         ax.legend()
         plt.savefig(f"efifv2rws{stage}_epoch{epoch}.png")
         plt.close()
@@ -166,8 +171,6 @@ class Trainer:
         self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         epoch = checkpoint['epoch']
         return epoch
-
-
 
 
 class DampedCosineScheduler:
@@ -224,42 +227,48 @@ class DampedCosineScheduler:
 def s2_train():
     # Modify these lines to use your custom dataloader
     base_path = pathlib.Path(__file__).parent.absolute()
-    coco_path = base_path.joinpath('COCO_TEST')
-    channels = [0, 1, 2, 5]
+    coco_path = base_path.joinpath('CCO_TE')
+    channels = [0, 1, 2, 5, 9]
     gray = True
 
-    train_dataloader, val_dataloader = createDataLoader(coco_path, batchsize=8, channels=channels, num_workers=8,
+    train_dataloader, val_dataloader = createDataLoader(coco_path, batchsize=4, channels=channels, num_workers=8,
                                                         shuffle=True, gray=gray)
 
-    #model = PoseEstimationModel(len(channels) - 2 if gray else len(channels))
-    model = REN(len(channels) - 2 if gray else len(channels))
+    # model = PoseEstimationModel(len(channels) - 2 if gray else len(channels))
+    model = PoseEstimationModel(len(channels) - 2 if gray else len(channels))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
-    num_epochs = 10
+    num_epochs = 50
     scaler = GradScaler()
 
     # Set the base and max learning rates
     base_lr = 0.00025
-    max_lr = 0.0005
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=base_lr, weight_decay=0.0001)
+    optimizer = torch.optim.RAdam(model.parameters(), lr=base_lr, weight_decay=0.0001)
 
     # Initialize the DampedCosineScheduler with decay factors for both base and max learning rates
     # scheduler = DampedCosineScheduler(optimizer, base_lr=base_lr, max_lr=max_lr,
     #                                   decay_factor=0.5, base_decay_factor=0.7,
     #                                   steps_per_epoch=len(train_dataloader), num_epochs=num_epochs)
 
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=2,
-                                                                         verbose=True, threshold=1e-4,
-                                                                         threshold_mode='rel', cooldown=0, min_lr=0,
-                                                                         eps=1e-8)
+    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=2,
+    #                                                        verbose=True, threshold=1e-2,
+    #                                                        threshold_mode='rel', cooldown=0, min_lr=0,
+    #                                                        eps=1e-8)
+    #
+    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=20, eta_min=0.0001, last_epoch=-1)
+
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=0.001, steps_per_epoch=len(train_dataloader),
+                                                    epochs=num_epochs, anneal_strategy='cos', cycle_momentum=False,
+                                                    base_momentum=0.85, max_momentum=0.95, div_factor=25.0,
+                                                    final_div_factor=100000.0, last_epoch=-1, verbose=False, pct_start=0.3)
 
     trainer = Trainer(model, train_dataloader, val_dataloader, optimizer, device, scaler, scheduler)
     # trainer.load_checkpoint("pose_estimation_model_VT175_5_stage2.pth")
     # trainer.scheduler.pct_start = 0.1
 
-    save_path = "v2s_idknaymore_{}_{}.pth"
+    save_path = "Unscaled_{}_{}.pth"
 
     trainer.train(num_epochs, checkpoint_path=save_path, stage=2)
 
@@ -268,12 +277,12 @@ def s2_train():
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'scaler_state_dict': scaler.state_dict(),
-        # 'scheduler_state_dict': scheduler.state_dict(),
-    }, "full.pth")
+        'scheduler_state_dict': scheduler.state_dict(),
+    }, "full50.pth")
 
 
 if __name__ == '__main__':
     # s1_train()
-    # time.sleep(3600)
+    # time.sleep(2000)
     s2_train()
     # inference()

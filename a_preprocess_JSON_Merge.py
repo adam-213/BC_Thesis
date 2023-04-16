@@ -63,3 +63,8 @@ def merge_coco_jsons(json_files, save_path):
         json.dump(merged_json, f)
 
 
+if __name__ == '__main__':
+    json_files = glob.glob('./*.json')
+    save_path = Path('merged.json')
+    merge_coco_jsons(json_files, save_path)
+    validate_merged_coco_json(save_path)

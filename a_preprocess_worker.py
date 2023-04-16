@@ -127,7 +127,7 @@ class Preprocessor:
 
         # get shapes for the coco json
         try:
-            shapes = inputs['rgb'].shape[1:]
+            shapes = inputs['rgb'].shape[:2]
         except UnboundLocalError:
             shapes = inputs['depth'].shape
 
@@ -196,8 +196,8 @@ class Preprocessor:
         else:
             results = []
             # for i, scan_path in enumerate(tqdm(np.array(self.scans)[list(np.random.randint(0, len(self.scans), 25))])):
-            start = 3242
-            stop = 303
+            start = 400
+            stop = 600
             for i, scan_path in enumerate(tqdm(self.scans[start:])):
                 i = i + start
                 if i == stop + start:

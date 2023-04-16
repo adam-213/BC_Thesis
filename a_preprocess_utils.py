@@ -85,12 +85,12 @@ def save_NPZ(arr_dict, save_path, index):
     np.savez_compressed(str(save_path.joinpath(f'{index}.npz')), **arr_dict)
 
 
-def scale(arr):
-    # scale to 0 - 1
-    arr = arr - np.min(arr)
-    arr = arr / np.max(arr)
-
-    return arr
+# def scale(arr):
+#     # scale to 0 - 1
+#     arr = arr - np.min(arr)
+#     arr = arr / np.max(arr)
+#
+#     return arr
 
 
 def render(path, T):
