@@ -92,16 +92,39 @@ for i, (images, target) in enumerate(tqdm(full_loader)):
             rle_area = mask_util.area(rle_mask)
             # look up the label name
             name = dataset.coco.cats[label]['name']
+
+            # compute the centroid of the mask with moments
+            from copy import deepcopy
+
+            maskd = deepcopy(mask)
+            maskint = (maskd * 255).astype(np.uint8)
+            maskthresh = cv2.threshold(maskint, 0, 240, cv2.THRESH_BINARY)[1]
+            moments = cv2.moments(maskthresh)
+
+            # Compute the centroid using the moments
+            if moments["m00"] != 0:
+                centroid_x = int(moments["m10"] / moments["m00"])
+                centroid_y = int(moments["m01"] / moments["m00"])
+                # print("Centroid: ({}, {})".format(centroid_x, centroid_y))
+
+                # look up the depth from the depth image
+                depth_image = images[0, 3, :, :].cpu().detach().numpy()
+                depth_value = depth_image[centroid_y, centroid_x]
+            else:
+                raise ValueError("Centroid is 0,0")
+
             annotation = {
                 "id": int(label),
                 "category_id": int(label),
                 "image_id": int(image_id),
                 "bbox": rle_box.tolist(),
                 "score": float(score),
-                "segmentation": str(rle_mask),
+                "mask" : rle_mask['counts'].decode('utf-8'),
+                "size": rle_mask['size'],
                 "area": float(rle_area),
                 "transform": ttm.flatten(order='F').tolist(),
                 "name": name,
+                "centroid": [float(centroid_x), float(centroid_y), float(depth_value)],
             }
             coco_dict["annotations"].append(annotation)
             annotation_id += 1
@@ -132,5 +155,5 @@ with open(cocopath.joinpath("merged.json"), 'r') as f:
 
 j['images'] = coco_dict['images']
 j['annotations'] = coco_dict['annotations']
-with open(cocopath.joinpath("merged_maskrcnn.json"), 'w') as f:
+with open(cocopath.joinpath("merged_maskrcnn_centroid.json"), 'w') as f:
     json.dump(j, f)

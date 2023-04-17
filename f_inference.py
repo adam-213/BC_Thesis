@@ -15,6 +15,7 @@ import cv2
 import matplotlib.pyplot as plt
 
 import torchvision
+
 # Set up the camera intrinsic parameters
 intrinsics = {
     'fx': 1181.077335,
@@ -77,7 +78,7 @@ def prepare_inference():
     tmmodel = peModel(3)
 
     # load weights
-    tmmodel.load_state_dict(torch.load('full30.pth')['model_state_dict'])
+    tmmodel.load_state_dict(torch.load('Unscaled_80_stage2.pth')['model_state_dict'])
     rcmodel.load_state_dict(torch.load(base_path.joinpath("RCNN_UNSCALED", "RCNN_Unscaled_29.pth"))['model_state_dict'])
 
     # set models to eval mode
@@ -147,7 +148,7 @@ def translation_layer(best, image):
 
     # Compute the moments of the binary mask
     maskd = deepcopy(mask).transpose(1, 2, 0)
-    maskint = (maskd * 256).astype(np.uint8)
+    maskint = (maskd * 255).astype(np.uint8)
     maskthresh = cv2.threshold(maskint, 0, 240, cv2.THRESH_BINARY)[1]
     moments = cv2.moments(maskthresh)
 
@@ -189,13 +190,13 @@ def translation_layer(best, image):
         (image[:, 0:1, :, :] * 0.2989 + image[:, 1:2, :, :] * 0.5870 + image[:, 2:3, :, :] * 0.1140,
          image[:, 3:5, :, :]), dim=1)
 
-    #print(cut.shape)
+    # print(cut.shape)
 
     masked_image = cut * torch.Tensor(mask).unsqueeze(1)
 
     # center crop the image to the bbox
     masked_image_cropped = masked_image[:, :, int(y1):int(y2), int(x1):int(x2)]
-    #print((x1, y1), x2 - x1, y2 - y1)
+    # print((x1, y1), x2 - x1, y2 - y1)
     # convert to numpy
     rect = plt.Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False, edgecolor='g', linewidth=3)
     plt.imshow(image[0, :3, :, :].permute(1, 2, 0).detach().numpy())
@@ -219,6 +220,12 @@ def vis_mask(rcimags, best, XY):
     plt.show()
 
 
+def slerp(p0, p1, t):
+    omega = np.arccos(np.dot(p0 / np.linalg.norm(p0), p1 / np.linalg.norm(p1)))
+    so = np.sin(omega)
+    return np.sin((1.0 - t) * omega) / so * p0 + np.sin(t * omega) / so * p1
+
+
 def viz_dir(hat_W, img, XYZ, gt_zvec, loss):
     from itertools import permutations
     hat_W = torch.stack([hat_W, hat_W], dim=0)
@@ -240,9 +247,9 @@ def viz_dir(hat_W, img, XYZ, gt_zvec, loss):
     for img_index in range(hat_w.shape[0]):
         cur_img = Img[0]
 
-        fig, ax = plt.subplots(figsize=(10, 10))
-        ax.imshow(cur_img[:, :, 0], cmap='gray')
-        ax.set_title(f'Image with hat_w and gt_w - Loss: {loss}')
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 10))
+        ax1.imshow(cur_img[:, :, 0], cmap='gray')
+        ax1.set_title(f'Image with hat_w and gt_w - Loss: {loss}')
 
         start = np.array([cur_img.shape[1] // 2, cur_img.shape[0] // 2])
 
@@ -256,11 +263,44 @@ def viz_dir(hat_W, img, XYZ, gt_zvec, loss):
 
         # Plot hat_w line in green
         for i in range(num_points - 1):
-            ax.plot(points_hat_w[i:i + 2, 0], points_hat_w[i:i + 2, 1], '-', color='g', alpha=0.5)
+            ax1.plot(points_hat_w[i:i + 2, 0], points_hat_w[i:i + 2, 1], '-', color='g', alpha=0.5)
 
         # Plot gt_w line in red
         for i in range(num_points - 1):
-            ax.plot(points_gt_w[i:i + 2, 0], points_gt_w[i:i + 2, 1], '-', color='r', alpha=0.5)
+            ax1.plot(points_gt_w[i:i + 2, 0], points_gt_w[i:i + 2, 1], '-', color='r', alpha=0.5)
+
+        # 3D subplot with arcs
+        ax2 = fig.add_subplot(122, projection='3d')
+
+        # Draw octant separation planes with different colors and 0.2 alpha
+        xx, yy = np.meshgrid(np.linspace(-1, 1, 2), np.linspace(-1, 1, 2))
+        zz = np.zeros_like(xx)
+        ax2.plot_surface(xx, yy, zz, alpha=0.2, color='r')  # X-Y plane (red)
+        ax2.plot_surface(xx, zz, yy, alpha=0.2, color='g')  # X-Z plane (green)
+        ax2.plot_surface(zz, yy, xx, alpha=0.2, color='b')  # Y-Z plane (blue)
+
+        # Plot the arc
+        num_arc_points = 100
+        arc_points = np.array([slerp(hat_w[img_index], gt_w[:, 0], t) for t in np.linspace(0, 1, num_arc_points)])
+        ax2.plot(arc_points[:, 0], arc_points[:, 1], arc_points[:, 2], color='r', alpha=0.5)
+
+        # Plot hat_w and gt_w vectors
+        ax2.quiver(0, 0, 0, hat_w[img_index][0], hat_w[img_index][1], hat_w[img_index][2], color='g', alpha=0.8,
+                   arrow_length_ratio=0.1)
+        ax2.quiver(0, 0, 0, gt_w[0][0], gt_w[1][0], gt_w[2][0], color='r', alpha=0.8, arrow_length_ratio=0.1)
+        from math import pi, cos
+        A,B = hat_w[img_index], gt_w[:, 0]
+        dot = np.dot(A, B)
+        magnitude_A = np.linalg.norm(A)
+        magnitude_B = np.linalg.norm(B)
+        theta_degrees = np.arccos(dot / (magnitude_A * magnitude_B)) * 180 / np.pi
+        ax2.set_title(f'3D plot of hat_w and gt_w - Loss: {loss} - Angle: {theta_degrees:.2f} degrees')
+
+        # Set the limits and aspect ratio
+        ax2.set_xlim(-1, 1)
+        ax2.set_ylim(-1, 1)
+        ax2.set_zlim(-1, 1)
+        ax2.set_box_aspect((1, 1, 1))
 
         plt.show()
 
@@ -334,7 +374,7 @@ if __name__ == '__main__':
     ptc = rcimages[:, [3, 4, 5], :, :]
     rcimages = rcimages[:, [0, 1, 2, 5, 6], :, :]
     rcimages = rcimages.to(device)
-    #print(rctargets[0]['tm'])
+    # print(rctargets[0]['tm'])
 
     best = infer_mrcnn(rcmodel, rcimages)
     gttm = find_match(rctargets, best)
@@ -345,16 +385,15 @@ if __name__ == '__main__':
     # plt.show()
 
     # pnp_test(masked_image_cropped.clone(), ptc, world_coords)
-    masked_image_cropped = torch.nn.functional.avg_pool2d(masked_image_cropped, 3,
-                                                          stride=1, padding=1)
+
     # center crop with 224x224
     masked_image_cropped = torchvision.transforms.functional.center_crop(masked_image_cropped, (224, 224))
-
 
     # vis_mask(rcimages, best, XYZ)
 
     # pass the data through the pose estimation network
     XYZ = torch.Tensor(XYZ).unsqueeze(0).to(device)
+    print("coords", XYZ)
 
     # stackedimg = torch.cat(([masked_image_cropped] * 4), dim=0)
     # stackedxyz = torch.cat(([XYZ] * 4), dim=0)
@@ -364,7 +403,7 @@ if __name__ == '__main__':
     tmoutputs = tmmodel(masked_image_cropped, XYZ)
     gt_zvec = gttm[:3, 2]
     print("Ground truth pose: ", gt_zvec.detach().numpy())
-    #print("Predicted pose: ", tmoutputs[:1].detach().numpy())
+    # print("Predicted pose: ", tmoutputs[:1].detach().numpy())
     loss = tmmodel.Wloss(tmoutputs[:1, :], gt_zvec.unsqueeze(0).to(device))
 
     # get the predicted pose
@@ -372,4 +411,17 @@ if __name__ == '__main__':
 
     # visualize the predicted pose
     viz_dir(tmoutputs[0], masked_image_cropped, XYZ, gt_zvec, loss)
-    #print("Time taken: ", time.time() - t)
+    # print("Time taken: ", time.time() - t)
+    masked_image_cropped = torch.nn.functional.avg_pool2d(masked_image_cropped, 3,
+                                                          stride=1, padding=1)
+    tmoutputs = tmmodel(masked_image_cropped, torch.Tensor((0, 0, 0)).to(device).unsqueeze(0))
+    gt_zvec = gttm[:3, 2]
+    print("Ground truth pose: ", gt_zvec.detach().numpy())
+    # print("Predicted pose: ", tmoutputs[:1].detach().numpy())
+    loss = tmmodel.Wloss(tmoutputs[:1, :], gt_zvec.unsqueeze(0).to(device))
+
+    # get the predicted pose
+    print("Predicted pose: ", tmoutputs[:1].detach().numpy())
+
+    # visualize the predicted pose
+    viz_dir(tmoutputs[0], masked_image_cropped, XYZ, gt_zvec, loss)

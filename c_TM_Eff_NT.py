@@ -76,27 +76,26 @@ class CustomLoss(nn.Module):
             return torch.mean(combined_loss)
 
 
-
 class PoseEstimationModel(nn.Module):
     def __init__(self, num_channels=7):
         super(PoseEstimationModel, self).__init__()
         self.workround = False
 
         self.Wloss = CustomLoss(use_geodesic_loss=True,
-                                alpha=10.0,
+                                alpha=1.0,
                                 lambda_magnitude=0.0,
                                 lambda_range=0.0,
-                                beta=0.1)
-        #self.Wloss = torch.nn.MSELoss()
+                                beta=0)
+        # self.Wloss = torch.nn.MSELoss()
         self.input_norm = nn.BatchNorm2d(num_channels)
         # self.rotation_equivariant_layer = RotationEquivariantLayer(num_channels, mid_channels, num_rotations)
-        self.backbone = timm.create_model("deit3_small_patch16_224", pretrained=False,
+        self.backbone = timm.create_model("deit3_medium_patch16_224", pretrained=False,
                                           in_chans=num_channels, num_classes=0)
 
         self.backbone.head = nn.Identity()
 
         self.W_head = nn.Sequential(
-            nn.Linear(384 + 3, 4096),
+            nn.Linear(512, 4096),
             nn.BatchNorm1d(4096),
             nn.Hardswish(),
             nn.Dropout(0.3),
@@ -121,7 +120,7 @@ class PoseEstimationModel(nn.Module):
     def forward(self, x, XYZ):
         # test if every shape is divisible by 16
         # if not, pad it
-        #print(x.shape)
+        # print(x.shape)
 
         if x.shape[0] <= 1:
             x = torch.cat((x, x), dim=0)
@@ -130,18 +129,19 @@ class PoseEstimationModel(nn.Module):
         try:
             x = self.layer(self.input_norm, x)
             backbonex = self.layer(self.backbone, x)
-            x = torch.cat((backbonex, XYZ), dim=1)
-            x = self.layer(self.W_head, x)
+            # x = torch.cat((backbonex, XYZ), dim=1)
+            x = self.layer(self.W_head, backbonex)
             return x
         except OverflowError as e:
             print(e)
             return None
 
-    def loss_W(self, hat_W, gt_W, *plotargs):
+    def loss_W(self, hat_W, gt_W, plot, *plotargs):
         # normalisation, but im not sure if its helping or hurting
         # magnitude = torch.sqrt(torch.sum(hat_W ** 2, dim=1)).view(-1, 1)
         # hat_W = hat_W / magnitude
         if random.random() < 0.001: self.plot(hat_W, gt_W, *plotargs)
+        if plot: self.plot(hat_W, gt_W, *plotargs)
 
         if self.workround:
             hat_W = hat_W[:1]
@@ -157,6 +157,8 @@ class PoseEstimationModel(nn.Module):
         except RuntimeError as e:
             print(e)
             raise OverflowError
+
+    from mpl_toolkits.mplot3d import Axes3D
 
     def plot(self, hat_W, gt_W, img, XYZ, batchepoch=(0, 0)):
         try:
@@ -181,11 +183,9 @@ class PoseEstimationModel(nn.Module):
                 cur_img = Img[img_index]
                 cur_img = np.transpose(cur_img, (1, 2, 0))
 
-                fig, ax = plt.subplots(figsize=(10, 10))
-                ax.imshow(cur_img)
+                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 10))
+                ax1.imshow(cur_img)
 
-                # start = XYZ[img_index][:2]
-                # center of the image, is not the same as XY - # TODO check this in the inference
                 start = np.array([cur_img.shape[1] // 2, cur_img.shape[0] // 2])
                 scaling_factor = 100
                 end_hat_w = start + scaling_factor * np.array([hat_w[img_index][0], hat_w[img_index][1]])
@@ -196,16 +196,47 @@ class PoseEstimationModel(nn.Module):
                 points_hat_w = np.linspace(start, end_hat_w, num_points)
                 points_gt_w = np.linspace(start, end_gt_w, num_points)
 
-                # Plot hat_w line in green
+                # Plot the lines in the original image (ax1)
                 for i in range(num_points - 1):
-                    ax.plot(points_hat_w[i:i + 2, 0], points_hat_w[i:i + 2, 1], '-', color='g', alpha=0.5)
+                    ax1.plot(points_hat_w[i:i + 2, 0], points_hat_w[i:i + 2, 1], '+', color='g', alpha=0.5)
+                    ax1.plot(points_gt_w[i:i + 2, 0], points_gt_w[i:i + 2, 1], '+', color='b', alpha=0.5)
+                # 3D subplot with arcs
+                ax2 = fig.add_subplot(122, projection='3d')
+                # Draw octant separation planes with different colors and 0.2 alpha
+                xx, yy = np.meshgrid(np.linspace(-1, 1, 2), np.linspace(-1, 1, 2))
+                zz = np.zeros_like(xx)
 
-                # Plot gt_w line in blue
-                for i in range(num_points - 1):
-                    ax.plot(points_gt_w[i:i + 2, 0], points_gt_w[i:i + 2, 1], '+', color='b', alpha=0.5)
+                ax2.plot_surface(xx, yy, zz, alpha=0.1, color='r')  # X-Y plane (red)
+                ax2.plot_surface(xx, zz, yy, alpha=0.1, color='g')  # X-Z plane (green)
+                ax2.plot_surface(zz, yy, xx, alpha=0.1, color='b')  # Y-Z plane (blue)
+                # Plot hat_w and gt_w vectors
+                ax2.quiver(0, 0, 0, hat_w[img_index][0], hat_w[img_index][1], hat_w[img_index][2], color='g', alpha=0.5)
+                ax2.quiver(0, 0, 0, gt_w[img_index][0], gt_w[img_index][1], gt_w[img_index][2], color='b', alpha=0.5)
+
+                # Calculate the arc using Spherical Linear Interpolation (SLERP)
+                num_points = 100
+                arc_points = np.array(
+                    [slerp(hat_w[img_index], gt_w[img_index], t) for t in np.linspace(0, 1, num_points)])
+                # Plot the arc
+                ax2.plot(arc_points[:, 0], arc_points[:, 1], arc_points[:, 2], color='r', alpha=0.5)
+
+                # Set the limits and aspect ratio
+                ax2.set_xlim(-1, 1)
+                ax2.set_ylim(-1, 1)
+                ax2.set_zlim(-1, 1)
+                ax2.set_box_aspect((1, 1, 1))
+
                 loss_value = self.Wloss(hat_W[img_index:img_index + 1], gt_W[img_index:img_index + 1], index=0)
-                ax.set_title(f"{loss_value}")
+                ax1.set_title(f"{loss_value}")
+
                 fig.savefig(f"xx_hn_d{batchepoch[1]}_{batchepoch[0]}_{img_index}.png")
                 plt.close(fig)
+
         except Exception as e:
             print("wtf", e)
+
+
+def slerp(p0, p1, t):
+    omega = np.arccos(np.dot(p0 / np.linalg.norm(p0), p1 / np.linalg.norm(p1)))
+    so = np.sin(omega)
+    return np.sin((1.0 - t) * omega) / so * p0 + np.sin(t * omega) / so * p1

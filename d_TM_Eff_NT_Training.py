@@ -25,15 +25,15 @@ class Trainer:
         self.device = device
         self.scaler = scaler
         self.scheduler = scheduler
+        self.plotbatch = 0
 
     def train_one_epoch_stage_2(self, epoch):
         self.model.train()
         total_loss_list = []
-        for batch, (images_stacked_masked, z, z_vecs, names, XYZs) in enumerate(self.train_dataloader):
-            if type(z) == type(None):
+        for batch, (images_stacked_masked, z_vecs, XYZs) in enumerate(self.train_dataloader):
+            if type(z_vecs) == type(None):
                 continue
             self.optimizer.zero_grad()
-            z = z.to(self.device)
             images_stacked_masked = images_stacked_masked.to(self.device)
             z_vecs = z_vecs.to(self.device)
             XYZs = XYZs.to(self.device)
@@ -44,7 +44,8 @@ class Trainer:
                 if weights is None:
                     print("None weights", images_stacked_masked.shape, XYZs.shape)
                     continue
-                loss = self.model.loss_W(weights, z_vecs, images_stacked_masked, XYZs, [batch, epoch])
+                loss = self.model.loss_W(weights, z_vecs, False,
+                                         images_stacked_masked, XYZs, [batch, epoch])
 
             # Scale the gradients
             try:
@@ -56,7 +57,7 @@ class Trainer:
             self.scaler.step(self.optimizer)
             self.scaler.update()
 
-            self.scheduler.step()
+            # self.scheduler.step()
 
             # loss.backward()
             # self.optimizer.step()
@@ -66,32 +67,33 @@ class Trainer:
             total_loss_list.append(loss.item())
 
             print(f"Epoch {epoch} Batch {batch} Loss: {loss.item()}")
-
         return total_loss_list
 
     def val_one_epoch_stage_2(self, epoch):
         self.model.eval()
         total_val_loss_list = []
+        self.plotbatch = self.plotbatch % epoch if epoch != 0 else 0
 
         with torch.no_grad():
-            for batch, (images_stacked_masked, z, z_vecs, names, XYZs) in enumerate(self.val_dataloader):
-                if type(z) == type(None):
+            for batch, (images_stacked_masked, z_vecs, XYZs) in enumerate(self.val_dataloader):
+                print(time.time())
+                if type(z_vecs) == type(None):
                     continue
                 self.optimizer.zero_grad()
-                z = z.to(self.device)
                 images_stacked_masked = images_stacked_masked.to(self.device)
                 z_vecs = z_vecs.to(self.device)
                 XYZs = XYZs.to(self.device)
-
+                plot = True if batch == self.plotbatch else False
                 # Mixed precision training for speeeeed
                 with autocast():
                     weights = self.model(images_stacked_masked, XYZs)
-                    val_loss = self.model.loss_W(weights, z_vecs, images_stacked_masked, XYZs, [batch, epoch])
+                    val_loss = self.model.loss_W(weights, z_vecs, plot, images_stacked_masked, XYZs, [batch, epoch])
 
                 total_val_loss_list.append(val_loss.item())
 
                 print(f"Validation Epoch {epoch} Batch {batch} Loss: {val_loss.item()}")
 
+        self.plotbatch += 1
         return total_val_loss_list
 
     def train(self, num_epochs, stage=1, checkpoint_path=None):
@@ -101,6 +103,7 @@ class Trainer:
 
         for epoch in range(num_epochs):
             s2_loss = self.train_one_epoch_stage_2(epoch)
+
             stage2_train_losses.append(s2_loss)
 
             s2_loss_val = self.val_one_epoch_stage_2(epoch)
@@ -111,10 +114,10 @@ class Trainer:
             stage2_train_losses = stage2_train_losses[-4:]
             # stage2_val_losses = stage2_val_losses[-4:]
             # self.scheduler.update_lr_on_plateau(np.mean(s2_loss_val))
-            # self.scheduler.step(np.mean(s2_loss_val))
-
+            self.scheduler.step(np.mean(s2_loss_val))
+            t = time.time()
             self.plot_losses(stage2_train_losses, stage2_val_losses, stage=2, epoch=epoch)
-
+            print("plotting took", time.time() - t)
             if epoch % 2 == 0:
 
                 # Save the checkpoint
@@ -172,7 +175,6 @@ class Trainer:
         epoch = checkpoint['epoch']
         return epoch
 
-
 class DampedCosineScheduler:
     def __init__(self, optimizer, base_lr, max_lr, base_decay_factor, decay_factor, steps_per_epoch, num_epochs):
         self.optimizer = optimizer
@@ -185,7 +187,8 @@ class DampedCosineScheduler:
         self.current_step = 0
 
         # Initialize the ReduceLROnPlateau scheduler
-        self.reduce_plateau = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=2,
+        self.reduce_plateau = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1,
+                                                                         patience=2,
                                                                          verbose=True, threshold=1e-4,
                                                                          threshold_mode='rel', cooldown=0, min_lr=0,
                                                                          eps=1e-8)
@@ -223,7 +226,6 @@ class DampedCosineScheduler:
             self.max_lr = self.max_lr * factor
             param_group['lr'] = new_lr
 
-
 def s2_train():
     # Modify these lines to use your custom dataloader
     base_path = pathlib.Path(__file__).parent.absolute()
@@ -231,7 +233,7 @@ def s2_train():
     channels = [0, 1, 2, 5, 9]
     gray = True
 
-    train_dataloader, val_dataloader = createDataLoader(coco_path, batchsize=4, channels=channels, num_workers=8,
+    train_dataloader, val_dataloader = createDataLoader(coco_path, batchsize=3, channels=channels, num_workers=8,
                                                         shuffle=True, gray=gray)
 
     # model = PoseEstimationModel(len(channels) - 2 if gray else len(channels))
@@ -239,11 +241,11 @@ def s2_train():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
-    num_epochs = 50
+    num_epochs = 200
     scaler = GradScaler()
 
     # Set the base and max learning rates
-    base_lr = 0.00025
+    base_lr = 0.00009
 
     optimizer = torch.optim.RAdam(model.parameters(), lr=base_lr, weight_decay=0.0001)
 
@@ -252,17 +254,19 @@ def s2_train():
     #                                   decay_factor=0.5, base_decay_factor=0.7,
     #                                   steps_per_epoch=len(train_dataloader), num_epochs=num_epochs)
 
-    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=2,
-    #                                                        verbose=True, threshold=1e-2,
-    #                                                        threshold_mode='rel', cooldown=0, min_lr=0,
-    #                                                        eps=1e-8)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=2,
+                                                           verbose=True, threshold=1e-3,
+                                                           threshold_mode='rel', cooldown=0, min_lr=0,
+                                                           eps=1e-8)
     #
     # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=20, eta_min=0.0001, last_epoch=-1)
 
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=0.001, steps_per_epoch=len(train_dataloader),
-                                                    epochs=num_epochs, anneal_strategy='cos', cycle_momentum=False,
-                                                    base_momentum=0.85, max_momentum=0.95, div_factor=25.0,
-                                                    final_div_factor=100000.0, last_epoch=-1, verbose=False, pct_start=0.3)
+    # scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=0.00025,
+    #                                                 steps_per_epoch=len(train_dataloader),
+    #                                                 epochs=num_epochs, anneal_strategy='cos', cycle_momentum=False,
+    #                                                 base_momentum=0.85, max_momentum=0.95, div_factor=15.0,
+    #                                                 final_div_factor=10000.0, last_epoch=-1, verbose=False,
+    #                                                 pct_start=0.3)
 
     trainer = Trainer(model, train_dataloader, val_dataloader, optimizer, device, scaler, scheduler)
     # trainer.load_checkpoint("pose_estimation_model_VT175_5_stage2.pth")
@@ -280,9 +284,8 @@ def s2_train():
         'scheduler_state_dict': scheduler.state_dict(),
     }, "full50.pth")
 
-
 if __name__ == '__main__':
     # s1_train()
-    # time.sleep(2000)
+    time.sleep(3000)
     s2_train()
     # inference()
