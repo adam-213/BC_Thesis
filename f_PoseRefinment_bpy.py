@@ -3,6 +3,41 @@ import numpy as np
 import mathutils, math
 import random, os
 
+import os
+import sys
+from contextlib import contextmanager
+
+
+@contextmanager
+def stdout_redirected(to=os.devnull):
+    # a workaround for the fact that blender is more verbose than your mom when they meet an old friend
+    '''
+    import os
+
+    with stdout_redirected(to=filename):
+        print("from Python")
+        os.system("echo non-Python applications are also supported")
+    '''
+    fd = sys.stdout.fileno()
+
+    ##### assert that Python and C stdio write using the same file descriptor
+    ####assert libc.fileno(ctypes.c_void_p.in_dll(libc, "stdout")) == fd == 1
+
+    def _redirect_stdout(to):
+        sys.stdout.close()  # + implicit flush()
+        os.dup2(to.fileno(), fd)  # fd writes to 'to' file
+        sys.stdout = os.fdopen(fd, 'w')  # Python writes to fd
+
+    with os.fdopen(os.dup(fd), 'w') as old_stdout:
+        with open(to, 'w') as file:
+            _redirect_stdout(to=file)
+        try:
+            yield  # allow code to be run with the redirected stdout
+        finally:
+            _redirect_stdout(to=old_stdout)  # restore stdout.
+            # buffering and flags such as
+            # CLOEXEC may be different
+
 
 class STL_renderer:
     def __init__(self, INTRINSICS, width, height):
@@ -11,6 +46,7 @@ class STL_renderer:
         self.height = height
         self.obj = None
         self.output_path = "E:\\temp_data.png"
+        self.iter = 0
 
         self.setup_scene()
 
@@ -131,16 +167,22 @@ class STL_renderer:
         obj.active_material = material
 
     def apply_transformation(self, tm):
-        self.obj.matrix_world = mathutils.Matrix(tm)
+        if type(tm) == np.ndarray:
+            tm_np = tm
+        else:
+            tm_np = tm.detach().cpu().numpy()  # Convert the tensor to a NumPy array
+        matrix = mathutils.Matrix(tm_np)
+        self.obj.matrix_world = matrix
 
     def render_object(self):
         # set the output path
         bpy.context.scene.render.filepath = self.output_path
-        bpy.ops.render.render(
-            use_viewport=True,
-            write_still=True,
-            scene=bpy.context.scene.name,
-        )
+        with stdout_redirected():
+            bpy.ops.render.render(
+                use_viewport=True,
+                write_still=True,
+                scene=bpy.context.scene.name,
+            )
 
     def render_STL(self, path, centroid, zvec):
         # Calculate the initial transformation matrix
@@ -161,6 +203,7 @@ class STL_renderer:
         return init_tm
 
     def render_iter(self, tm):
+        self.iter += 1
         # Apply the transformation
         self.apply_transformation(tm)
 

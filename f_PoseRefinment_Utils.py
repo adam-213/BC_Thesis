@@ -1,6 +1,7 @@
 from f_inference import main as network_main
 import numpy as np
 from PIL import Image
+from scipy.spatial.transform import Rotation
 
 INTRINSICS = {
     'fx': 1181.077335,
@@ -62,14 +63,24 @@ def get_prediction():
 
 
 def decompose_matrix(matrix):
+    # Compute scale factors
     scale_vector = np.array(
         [np.linalg.norm(matrix[:3, 0]), np.linalg.norm(matrix[:3, 1]), np.linalg.norm(matrix[:3, 2])])
+
+    # Normalize the rotation matrix columns by the scale factors
     rotation_matrix = np.array(matrix[:3, :3])
     rotation_matrix[:, 0] /= scale_vector[0]
     rotation_matrix[:, 1] /= scale_vector[1]
     rotation_matrix[:, 2] /= scale_vector[2]
+
+    # Compute the axis-angle representation of the rotation matrix
+    r = Rotation.from_matrix(rotation_matrix)
+    axis_angle = r.as_rotvec()
+
+    # Extract the translation vector
     translation_vector = matrix[:3, 3]
-    return rotation_matrix, translation_vector, scale_vector
+
+    return axis_angle, translation_vector, scale_vector
 
 
 def load_image(path="E:\\temp_data.png"):
@@ -80,9 +91,24 @@ def load_image(path="E:\\temp_data.png"):
     return img
 
 
-def compose_matrix(rotation_matrix, translation_vector, scale_vector):
+def compose_matrix(axis_angle, translation_vector, scale_vector):
+    axis_angle, translation_vector = axis_angle.cpu().detach().numpy(), translation_vector.cpu().detach().numpy()
+    # Create a rotation matrix from the axis-angle representation
+    r = Rotation.from_rotvec(axis_angle)
+    rotation_matrix = r.as_matrix()
+
+    # Scale the rotation matrix columns by the scale factors
+    rotation_matrix[:, 0] *= scale_vector[0]
+    rotation_matrix[:, 1] *= scale_vector[1]
+    rotation_matrix[:, 2] *= scale_vector[2]
+
+    # Assemble the 4x4 transformation matrix
     new_matrix = np.zeros((4, 4))
-    new_matrix[:3, :3] = rotation_matrix * scale_vector.reshape(3, 1)
+    new_matrix[:3, :3] = rotation_matrix
     new_matrix[:3, 3] = translation_vector
     new_matrix[3, 3] = 1
+
     return new_matrix
+
+
+

@@ -13,92 +13,86 @@ import plotly.graph_objects as go
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+from torch.autograd import Variable
+import torch.optim as optim
+import logging
+
+logging.getLogger("bpy").disabled = True
 
 
-####### Simulated Annealing #######
-def mask_iou(mask1, mask2):
-    """Calculates the intersection over union of two masks"""
-    intersection = np.logical_and(mask1, mask2)
-    union = np.logical_or(mask1, mask2)
-    return np.sum(intersection) / np.sum(union)
+class Refiner:
+    def __init__(self, mask, init_tm, renderer):
+        self.gt_mask = torch.from_numpy(mask).float()
+        self.renderer = renderer
+        self.losses = []
+        self.tms = []
 
+        self.image_path = "E:/temp_data.png"
+        # rotvec is in axis angle
+        self.rot_vec, self.trans_vec, self.scale_vec = utils.decompose_matrix(init_tm)
+        # scale vec should stay at 1 because we are looking for matching the object not the appearance
 
-def random_rotvec(perturbation_scale):
-    return np.random.uniform(-perturbation_scale, perturbation_scale, (3,))
+        # convert to torch variables for optimization
+        self.rot_vec = Variable(torch.from_numpy(self.rot_vec).float(), requires_grad=True)
+        self.trans_vec = Variable(torch.from_numpy(self.trans_vec).float(), requires_grad=True)
 
+        self.optimizer_rot = optim.Adam([self.rot_vec], lr=0.1)
+        self.optimizer_trans = optim.Adam([self.trans_vec], lr=1)
 
-def perturb_transformation_matrix(current_tm, perturbation_scale=10):
-    rotation_matrix, translation_vector, scale_vector = utils.decompose_matrix(current_tm)
+    def calculate_iou_loss(self, mask):  # calculate the intersection over union loss
+        intersection = torch.logical_and(self.gt_mask, mask).sum().float()
+        union = torch.logical_or(self.gt_mask, mask).sum().float()
+        return torch.sum((1 - (intersection / union)))
 
-    rotation = sst.Rotation.from_matrix(rotation_matrix)
-    perturbed_rotvec = rotation.as_rotvec() + random_rotvec(perturbation_scale * 0.01)
-    perturbed_rotation_matrix = sst.Rotation.from_rotvec(perturbed_rotvec).as_matrix()
+    def calculate_loss(self):  # render the new mask and calculate the loss
+        tm = utils.compose_matrix(self.rot_vec, self.trans_vec, self.scale_vec)
+        self.renderer.render_iter(tm)
+        new_mask = torch.from_numpy(utils.load_image(self.image_path)).float()
+        loss = self.calculate_iou_loss(new_mask)
+        loss.requires_grad = True
+        return loss
 
-    translation_perturbation = np.random.uniform(-perturbation_scale, perturbation_scale, translation_vector.shape)
-    perturbed_translation_vector = translation_vector + translation_perturbation
+    def optimize(self, iters=50):
+        for i in range(iters):
+            self.optimizer_rot.zero_grad()
+            self.optimizer_trans.zero_grad()
 
-    # Set the scale vector to ones with the same shape as the original scale vector
-    fixed_scale_vector = np.ones_like(scale_vector)
+            loss = self.calculate_loss()
+            loss.backward()
 
-    new_tm = utils.compose_matrix(perturbed_rotation_matrix, perturbed_translation_vector, fixed_scale_vector)
+            self.optimizer_rot.step()
+            self.optimizer_trans.step()
 
-    return new_tm
+            self.losses.append(loss.item())
+            print(self.rot_vec)
 
+        self.plot_loss()
 
-def acceptance_probability(current_iou, new_iou, temperature, momentum, prev_iou):
-    delta_iou = new_iou - current_iou
-    momentum_term = momentum * (current_iou - prev_iou)
-    if delta_iou > 0:
-        return 1.0
-    else:
-        return np.exp((delta_iou - momentum_term) / temperature)
+        # Return the final transformation matrix
+        return utils.compose_matrix(self.rot_vec.clone(), self.trans_vec.clone(), self.scale_vec)
 
+    def compute_grad_iou(self, rot_vec, trans_vec):
+        rot_vec.requires_grad_(True)
+        trans_vec.requires_grad_(True)
 
-def refine_SA(mask, init_tm, iters=150, init_temperature=10, cooling_rate=0.9, renderer=None):
-    current_tm = init_tm
-    best_tm = init_tm
+        tm = utils.compose_matrix(rot_vec, trans_vec, self.scale_vec)
+        self.renderer.render_iter(tm)
+        new_mask = torch.from_numpy(utils.load_image(self.image_path)).float()
+        iou_loss = self.calculate_iou_loss(new_mask)
 
-    render_mask = utils.load_image()
-    best_iou = mask_iou(mask, render_mask)
-    current_iou = best_iou
+        iou_loss.backward()
 
-    temperature = init_temperature
-    last_iou = current_iou
+        grad_rot_vec = rot_vec.grad.clone()
+        grad_trans_vec = trans_vec.grad.clone()
 
-    for iteration in range(iters):
-        scale = 2 * (iters - iteration) / iters
-        new_tm = perturb_transformation_matrix(current_tm, perturbation_scale=scale)
+        rot_vec.requires_grad_(False)
+        trans_vec.requires_grad_(False)
 
-        # Apply the new transformation matrix and render the mask
-        renderer.render_iter(new_tm)
-        render_mask = utils.load_image()
+        return grad_rot_vec, grad_trans_vec
 
-        # apply thresholding
-        cv2.threshold(render_mask, 100, 255, cv2.THRESH_BINARY, render_mask)
-
-        plt.imshow(render_mask, alpha=0.5)
-        plt.imshow(mask, alpha=0.5)
-        plt.savefig(f'E:/iter_{iteration}.png')
-        plt.close()
-
-        new_iou = mask_iou(mask, render_mask)
-
-        prob = acceptance_probability(current_iou, new_iou, temperature, momentum=0.1, prev_iou=last_iou)
-        print(prob)
-        choice = random.choices([0, 1], weights=[1 - prob, prob])[0]
-
-        last_iou = current_iou
-
-        current_tm = new_tm if choice else current_tm
-        current_iou = new_iou if choice else current_iou
-
-        if current_iou > best_iou:
-            best_tm = current_tm
-            best_iou = current_iou
-
-        temperature *= cooling_rate
-
-    return best_tm
+    def plot_loss(self):
+        plt.plot(self.losses)
+        plt.show()
 
 
 def main():
@@ -107,7 +101,6 @@ def main():
     stl_path = base_path.joinpath('STL')
 
     renderer = STL_renderer(utils.INTRINSICS, 1032, 772)
-
     # get the data from the networks - using traning data for now
     z_vec, world_centroid, mask, label, image, ground_truth_matrix, INTRINSICS = utils.get_prediction()
     # render the baseline stl
@@ -115,8 +108,9 @@ def main():
 
     print(init_tm)
     init_tm[2, 3] += 10  # add an offset to the z axis because of the how i acquire the z from the data
-
-    pose = refine_SA(mask, init_tm, iters=50, renderer=renderer)
+    refiner = Refiner(mask, init_tm, renderer)
+    pose = refiner.optimize()
+    print(renderer.iter)
 
     print(pose)
     print(ground_truth_matrix)
