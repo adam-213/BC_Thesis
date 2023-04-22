@@ -8,7 +8,7 @@ from IPython.display import clear_output
 import pathlib
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from b_DataLoader_RCNN import createDataLoader
-from c_MaskRCNN import MaskRCNN
+from b_MaskRCNN import MaskRCNN
 
 
 class Trainer:

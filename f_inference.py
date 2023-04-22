@@ -4,8 +4,8 @@ import numpy
 
 from b_DataLoader_RCNN import createDataLoader as rcdataloader
 
-from c_TM_Eff_NT import PoseEstimationModel as peModel
-from c_MaskRCNN import MaskRCNN as rcModel
+from d_TM_Eff_NT import PoseEstimationModel as peModel
+from b_MaskRCNN import MaskRCNN as rcModel
 
 import torch
 import torch.nn as nn
@@ -289,7 +289,7 @@ def viz_dir(hat_W, img, XYZ, gt_zvec, loss):
                    arrow_length_ratio=0.1)
         ax2.quiver(0, 0, 0, gt_w[0][0], gt_w[1][0], gt_w[2][0], color='r', alpha=0.8, arrow_length_ratio=0.1)
         from math import pi, cos
-        A,B = hat_w[img_index], gt_w[:, 0]
+        A, B = hat_w[img_index], gt_w[:, 0]
         dot = np.dot(A, B)
         magnitude_A = np.linalg.norm(A)
         magnitude_B = np.linalg.norm(B)
@@ -363,7 +363,7 @@ def find_match(gt, best):
             return tm
 
 
-if __name__ == '__main__':
+def main():
     rcmodel, tmmodel, rcdata, device = prepare_inference()
     t = time.time()
     # get data from dataloader for maskrcnn
@@ -395,10 +395,6 @@ if __name__ == '__main__':
     XYZ = torch.Tensor(XYZ).unsqueeze(0).to(device)
     print("coords", XYZ)
 
-    # stackedimg = torch.cat(([masked_image_cropped] * 4), dim=0)
-    # stackedxyz = torch.cat(([XYZ] * 4), dim=0)
-
-    # tmoutputs = tmmodel(stackedimg, stackedxyz)
 
     tmoutputs = tmmodel(masked_image_cropped, XYZ)
     gt_zvec = gttm[:3, 2]
@@ -411,17 +407,20 @@ if __name__ == '__main__':
 
     # visualize the predicted pose
     viz_dir(tmoutputs[0], masked_image_cropped, XYZ, gt_zvec, loss)
-    # print("Time taken: ", time.time() - t)
-    masked_image_cropped = torch.nn.functional.avg_pool2d(masked_image_cropped, 3,
-                                                          stride=1, padding=1)
-    tmoutputs = tmmodel(masked_image_cropped, torch.Tensor((0, 0, 0)).to(device).unsqueeze(0))
-    gt_zvec = gttm[:3, 2]
-    print("Ground truth pose: ", gt_zvec.detach().numpy())
-    # print("Predicted pose: ", tmoutputs[:1].detach().numpy())
-    loss = tmmodel.Wloss(tmoutputs[:1, :], gt_zvec.unsqueeze(0).to(device))
+    print("Time taken: ", time.time() - t)
 
-    # get the predicted pose
-    print("Predicted pose: ", tmoutputs[:1].detach().numpy())
+    label_name = rcdata.dataset.dataset.coco.cats[best[0]["labels"].item()]["name"]
 
-    # visualize the predicted pose
-    viz_dir(tmoutputs[0], masked_image_cropped, XYZ, gt_zvec, loss)
+    return (
+        tmoutputs[:1].detach().numpy(),  # predicted zvec
+        XYZ,  # centroid + looked up depth
+        best[0]["masks"],  # MaskRCNN mask
+        label_name,  # MaskRCNN label to get correct stl
+        rcimages.squeeze(0).permute(1, 2, 0).cpu().detach().numpy(),  # MaskRCNN input image to get the depth map
+        gttm  # Ground truth pose
+
+    )
+
+
+if __name__ == '__main__':
+    main()

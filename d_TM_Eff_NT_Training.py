@@ -12,8 +12,8 @@ from torch.utils.checkpoint import checkpoint
 import random
 import numpy as np
 import seaborn as sns
-from b_Dataloader_TM_CNN_NT import createDataLoader
-from c_TM_Eff_NT import PoseEstimationModel
+from d_Dataloader_TM_CNN_NT import createDataLoader
+from d_TM_Eff_NT import PoseEstimationModel
 
 
 class Trainer:

@@ -4,7 +4,7 @@ import numpy
 
 from b_DataLoader_RCNN import createDataLoader
 
-from c_MaskRCNN import MaskRCNN as rcModel
+from b_MaskRCNN import MaskRCNN as rcModel
 
 import torch
 import torch.nn as nn

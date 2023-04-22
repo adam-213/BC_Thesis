@@ -5,7 +5,7 @@ import numpy as np
 import pathlib
 
 from b_DataLoader_RCNN import createDataLoader
-from c_MaskRCNN import MaskRCNN
+from b_MaskRCNN import MaskRCNN
 
 
 def display_image_and_mask(image, mask, box, threshold=0.1):
