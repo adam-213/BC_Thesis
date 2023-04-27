@@ -161,7 +161,7 @@ class Trainer:
         sns.regplot(x=val_loss_x, y=val_losses, ax=ax, label="Validation RegLine", color="orange", scatter=False,
                     order=4)
         ax.legend()
-        plt.savefig(f"efifv2rws{stage}_epoch{epoch}.png")
+        plt.savefig(f"deit3_epoch{epoch}.png")
         plt.close()
 
     def load_checkpoint(self, path):
@@ -229,7 +229,7 @@ class DampedCosineScheduler:
 def s2_train():
     # Modify these lines to use your custom dataloader
     base_path = pathlib.Path(__file__).parent.absolute()
-    coco_path = base_path.joinpath('CCO_TE')
+    coco_path = base_path.joinpath('COCOFULL_Dataset')
     channels = [0, 1, 2, 5, 9]
     gray = True
 
@@ -241,7 +241,7 @@ def s2_train():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
-    num_epochs = 200
+    num_epochs = 50
     scaler = GradScaler()
 
     # Set the base and max learning rates
@@ -286,6 +286,6 @@ def s2_train():
 
 if __name__ == '__main__':
     # s1_train()
-    time.sleep(3000)
+   #time.sleep(3000)
     s2_train()
     # inference()

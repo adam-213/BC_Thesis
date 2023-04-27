@@ -196,6 +196,12 @@ def translation_layer(best, image):
 
     # center crop the image to the bbox
     masked_image_cropped = masked_image[:, :, int(y1):int(y2), int(x1):int(x2)]
+
+    if depth_value == 0:
+        notzero = masked_image_cropped[0, 1, :, :]
+        depth_value = torch.mean(notzero[notzero != 0])
+        print("Depth value is 0, using mean depth value instead", depth_value)
+
     # print((x1, y1), x2 - x1, y2 - y1)
     # convert to numpy
     rect = plt.Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False, edgecolor='g', linewidth=3)
@@ -305,42 +311,6 @@ def viz_dir(hat_W, img, XYZ, gt_zvec, loss):
         plt.show()
 
 
-def pnp_test(rgb, xyz, cut):
-    # Set up the camera intrinsic parameters
-    xyz = xyz[:, :, int(cut[1]):int(cut[3]), int(cut[0]):int(cut[2])]
-    intrinsics = {
-        'fx': 1181.077335,
-        'fy': 1181.077335,
-        'cx': 516.0,
-        'cy': 386.0
-    }
-    camera_matrix = np.array([[intrinsics['fx'], 0, intrinsics['cx']],
-                              [0, intrinsics['fy'], intrinsics['cy']],
-                              [0, 0, 1]])
-    dist_coeffs = np.zeros((4, 1))
-    # Find the chessboard corners
-    # Distortion coefficients (you should use the values from your specific camera)
-    dist_coeffs = np.zeros(4, dtype=np.float32)
-
-    def project_points(xyz, camera_matrix):
-        # Project 3D points to 2D image plane
-        projected_points, _ = cv2.projectPoints(xyz, np.zeros(3), np.zeros(3), camera_matrix, np.zeros(4))
-        return projected_points.reshape(-1, 2)
-
-    # Estimate the pose using PnP
-    xyz_reshaped = xyz.reshape(-1, 3)
-    xyz_reshaped = xyz_reshaped.detach().numpy()
-    points = project_points(xyz_reshaped, camera_matrix)
-
-    # to numpy
-
-    _, rvec, tvec = cv2.solvePnP(xyz_reshaped, points, camera_matrix, dist_coeffs)
-
-    # Convert rotation vector to rotation matrix
-    rotation_matrix, _ = cv2.Rodrigues(rvec)
-    print("Rotation matrix: ", rotation_matrix)
-
-
 import pathlib
 
 
@@ -394,7 +364,6 @@ def main():
     # pass the data through the pose estimation network
     XYZ = torch.Tensor(XYZ).unsqueeze(0).to(device)
     print("coords", XYZ)
-
 
     tmoutputs = tmmodel(masked_image_cropped, XYZ)
     gt_zvec = gttm[:3, 2]

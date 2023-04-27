@@ -39,8 +39,8 @@ class Preprocessor:
 
     def __init__(self):
         self.path = pathlib.Path(__file__).parent.absolute()
-        self.data_path = self.path.joinpath('RawDS')
-        self.coco_path = self.path.joinpath('CCO_TE')
+        self.data_path = self.path.joinpath('CoCoFULL')
+        self.coco_path = self.path.joinpath('COCOFULL_Dataset')
         self.save_path = self.coco_path.joinpath('train')
 
         if not self.save_path.exists():
@@ -74,14 +74,27 @@ class Preprocessor:
     def load_scan_paths(self):
         """Load all scan paths into memory"""
         for folder in self.data_path.iterdir():
-            scene_path = folder.joinpath('scene_paths.txt')
-            with open(scene_path, 'r') as f:
-                data = f.read()
-                data = data.split('\n')
-                for scan in data:
-                    if scan:
-                        scan_path = folder.joinpath(scan)
-                        self.scans.append(scan_path)
+            try:
+                scene_path = folder.joinpath('scene_paths.txt')
+                with open(scene_path, 'r') as f:
+                    data = f.read()
+                    data = data.split('\n')
+                    for scan in data:
+                        if scan:
+                            scan_path = folder.joinpath(scan)
+                            self.scans.append(scan_path)
+
+            except FileNotFoundError:
+                for subfolder in folder.iterdir():
+                    scene_path = subfolder.joinpath('scene_paths.txt')
+
+                    with open(scene_path, 'r') as f:
+                        data = f.read()
+                        data = data.split('\n')
+                        for scan in data:
+                            if scan:
+                                scan_path = folder.joinpath(scan)
+                                self.scans.append(scan_path)
 
     def scan_load(self, scene_path):
         """Read single scan
@@ -181,6 +194,7 @@ class Preprocessor:
         stls = {}
         stls["part_thruster"] = "stl/part_thruster1.stl"
         stls["part_cogwheel"] = "stl/part_cogwheel1.stl"
+        stls["part_armadillo"] = "stl/part_armadillo.stl"
 
         # start muliprocessing pool
         if use_mp:
@@ -196,8 +210,8 @@ class Preprocessor:
         else:
             results = []
             # for i, scan_path in enumerate(tqdm(np.array(self.scans)[list(np.random.randint(0, len(self.scans), 25))])):
-            start = 400
-            stop = 600
+            start = 9000
+            stop = 500
             for i, scan_path in enumerate(tqdm(self.scans[start:])):
                 i = i + start
                 if i == stop + start:

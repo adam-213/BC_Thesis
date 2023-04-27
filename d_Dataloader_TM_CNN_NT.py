@@ -33,9 +33,7 @@ class CustomCocoDetection(CocoDetection):
 
     def _load_image(self, id: int) -> torch.Tensor:
         # overrride the _load_image method to load the images from the npz files in fp16
-        # print("Loading image: ", id, "")
         path = self.coco.loadImgs(id)[0]["file_name"]
-        # print("Path: ", path, " ")
         npz_file = np.load(os.path.join(self.root, path))
         # way to get the keys of the npz file, and load them as a list in the same order
         img_arrays = [npz_file[key] for key in npz_file.keys()]
@@ -45,15 +43,6 @@ class CustomCocoDetection(CocoDetection):
         # R,G,B, X,Y,Z, NX,NY,NZ ,I
         image = torch.from_numpy(image).type(torch.float32)
 
-        # image_scaled = scale(image)
-        # so the image is in the range of 0 to 1 not 0.5 to 1 as it is now
-        # image_scaled[5] = (image_scaled[5] - 0.5) * 2
-        # try:
-        #     assert image_scaled[5].min() >= 0 and image_scaled[5].max() <= 1, "Image is not in the range of 0 to 1"
-        # except AssertionError as e:
-        #     print("Image min: ", image_scaled[5].min(), " max: ", image_scaled[5].max())
-        #     raise e
-
         return image
 
     def _load_target(self, id: int):
@@ -61,14 +50,6 @@ class CustomCocoDetection(CocoDetection):
         # no idea why it is doing that
         x = self.coco.imgToAnns[id]
         return x
-
-
-def scale(image):
-    # image appears to be -1 to 1
-    # scale to 0 to 1
-    image = (image + 1) / 2
-    # print("Image min: ", image.min(), " max: ", image.max())
-    return image
 
 
 # Set up the camera intrinsic parameters
@@ -83,33 +64,26 @@ intrinsics = {
 def world_to_image_coords(world_coords, intrinsics):
     fx, fy, cx, cy = intrinsics['fx'], intrinsics['fy'], intrinsics['cx'], intrinsics['cy']
     X, Y, Z = world_coords
-
     # Normalize the real-world coordinates
     x = X / Z
     y = Y / Z
-
     # Apply the intrinsic parameters to convert to pixel coordinates
     u = fx * x + cx
     v = fy * y + cy
-
     # Round to integer values
     u, v = round(u), round(v)
-
     return u, v
 
 
 def image_to_world_coords(image_coords, intrinsics, Z):
     fx, fy, cx, cy = intrinsics['fx'], intrinsics['fy'], intrinsics['cx'], intrinsics['cy']
     u, v = image_coords
-
     # Convert pixel coordinates to normalized image coordinates
     x = (u - cx) / fx
     y = (v - cy) / fy
-
     # Compute the real-world coordinates
     X = x * Z
     Y = y * Z
-
     return X, Y, Z
 
 
@@ -275,10 +249,27 @@ def collate_first_stage(images, targets, channels, gray):
         images = torch.cat(
             (images[:, 0:1, :, :] * 0.2989 + images[:, 1:2, :, :] * 0.5870 + images[:, 2:3, :, :] * 0.1140,
              images[:, 3:, :, :]), dim=1)
-        # blur the image
-        images = torch.cat((torch.nn.functional.avg_pool2d(images[:, 0:1, :, :], 3, stride=1, padding=1),
-                            images[:, 1:, :, :]), dim=1)
+
+    # add some data augmentation noise
+    # this will only work for grayscale images
+    # please don't change the setup of the channels, or this will most likely break
+
+    # gaussian blur
+    if random.random() > 0.9:
         images = torch.nn.functional.avg_pool2d(images, 3, stride=1, padding=1)
+    # salt and pepper noise
+    if random.random() > 0.9:
+        images = torch.nn.functional.dropout2d(images, p=0.02, training=True)
+    # poisson noise to simulate photon noise
+    if random.random() > 0.9:
+        lam = images.mean()  # set the Poisson distribution parameter
+        images = torch.poisson(images / lam) * lam
+    # color jitter
+    if random.random() > 0.9:
+        images[:, 0, :, :] = torchvision.transforms.ColorJitter()(images[:, 0, :, :] )
+    # depth noise
+    if random.random() > 0.9:
+        images[:, 1, :, :] = images[:, 1, :, :] + torch.randn_like(images[:, 1, :, :]) * 2  # 2mm noise in depth
 
     return images, targets
 

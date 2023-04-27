@@ -229,7 +229,7 @@ class PoseEstimationModel(nn.Module):
                 loss_value = self.Wloss(hat_W[img_index:img_index + 1], gt_W[img_index:img_index + 1], index=0)
                 ax1.set_title(f"{loss_value}")
 
-                fig.savefig(f"xx_hn_d{batchepoch[1]}_{batchepoch[0]}_{img_index}.png")
+                fig.savefig(f"sample{batchepoch[1]}_{batchepoch[0]}_{img_index}.png")
                 plt.close(fig)
 
         except Exception as e:

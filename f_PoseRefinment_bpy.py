@@ -10,7 +10,6 @@ from contextlib import contextmanager
 
 @contextmanager
 def stdout_redirected(to=os.devnull):
-    # a workaround for the fact that blender is more verbose than your mom when they meet an old friend
     '''
     import os
 
@@ -46,7 +45,6 @@ class STL_renderer:
         self.height = height
         self.obj = None
         self.output_path = "E:\\temp_data.png"
-        self.iter = 0
 
         self.setup_scene()
 
@@ -66,7 +64,7 @@ class STL_renderer:
         bpy.context.scene.eevee.use_bloom = False
         bpy.context.scene.eevee.use_ssr = False
         bpy.context.scene.eevee.use_soft_shadows = False
-        bpy.context.scene.eevee.taa_render_samples = 4
+        bpy.context.scene.eevee.taa_render_samples = 2
         bpy.context.scene.eevee.taa_samples = 2
 
         # Simplify the scene
@@ -167,17 +165,12 @@ class STL_renderer:
         obj.active_material = material
 
     def apply_transformation(self, tm):
-        if type(tm) == np.ndarray:
-            tm_np = tm
-        else:
-            tm_np = tm.detach().cpu().numpy()  # Convert the tensor to a NumPy array
-        matrix = mathutils.Matrix(tm_np)
-        self.obj.matrix_world = matrix
+        self.obj.matrix_world = mathutils.Matrix(tm)
 
     def render_object(self):
         # set the output path
         bpy.context.scene.render.filepath = self.output_path
-        with stdout_redirected():
+        with stdout_redirected(): # a ridiculous workaround to suppress blender's output
             bpy.ops.render.render(
                 use_viewport=True,
                 write_still=True,
@@ -203,7 +196,6 @@ class STL_renderer:
         return init_tm
 
     def render_iter(self, tm):
-        self.iter += 1
         # Apply the transformation
         self.apply_transformation(tm)
 

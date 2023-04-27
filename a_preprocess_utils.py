@@ -207,7 +207,7 @@ def delete(scene):
         bpy.data.fonts.remove(font, do_unlink=True)
 
 
-def is_mask_good(mask, image, category, stls, T, occlusion=0.17):
+def is_mask_good(mask, image, category, stls, T, occlusion=0.15):
     # i cant believe this works finally
 
     obj = render(stls[category], T)

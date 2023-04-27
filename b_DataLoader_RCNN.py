@@ -129,6 +129,7 @@ def prepare_targets(targets) -> list:
     return prepared_targets
 
 
+
 def collate_fn_rcnn(batch, channels=None):
     """Custom collate function to prepare data for the model"""
     images, targets = zip(*batch)
@@ -163,7 +164,7 @@ class CollateWrapper:
         return self.collate_fn(batch, self.channels)
 
 
-def createDataLoader(path, bs=1, shuffle=False, num_workers=0, channels: list = None, split=0.9,
+def createDataLoader(path, bs=1, shuffle=True, num_workers=6, channels: list = None, split=0.9,
                      dataset_creation=False,anoname='merged.json'):
     ano_path = (path.joinpath('annotations', anoname))
 

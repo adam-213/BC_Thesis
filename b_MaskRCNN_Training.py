@@ -101,7 +101,7 @@ class Trainer:
             self.plot_losses(train_losses, val_loss_dict, epoch, len(self.train_dataloader), len(self.train_dataloader))
 
             # Save the checkpoint
-            if checkpoint_path:
+            if checkpoint_path and epoch % 2 == 0:
                 torch.save({
                     'epoch': epoch,
                     'model_state_dict': self.model.state_dict(),
@@ -111,6 +111,17 @@ class Trainer:
                     'val_losses': val_losses,
                     'val_loss_dict': val_loss_dict
                 }, checkpoint_path.format(epoch))
+
+        if checkpoint_path:
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': self.model.state_dict(),
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'scaler_state_dict': self.scaler.state_dict(),
+                'train_losses': train_losses,
+                'val_losses': val_losses,
+                'val_loss_dict': val_loss_dict
+            }, checkpoint_path.format(epoch))
 
     def load_checkpoint(self, checkpoint_path, model):
         checkpoint = torch.load(checkpoint_path)
@@ -123,16 +134,18 @@ class Trainer:
         # val_loss_dict = checkpoint['val_loss_dict']
         return model
 
+
 def main():
     base_path = pathlib.Path(__file__).parent.absolute()
-    coco_path = base_path.joinpath('CCO_TE')
+    coco_path = base_path.joinpath('COCOFULL_Dataset')
     channels = [0, 1, 2, 5, 9]
 
-    train_dataloader, val_dataloader, stats = createDataLoader(coco_path, 4, channels=channels,split=0.9)
+    train_dataloader, val_dataloader, stats = createDataLoader(coco_path, bs=3, num_workers=6,
+                                                               channels=channels, split=0.9,shuffle=True )
     mean, std = stats
     mean, std = mean[channels], std[channels]
 
-    model = MaskRCNN(5, 5, mean, std)
+    model = MaskRCNN(5, 6, mean, std)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=0.0001)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -141,7 +154,7 @@ def main():
     scaler = GradScaler()
     batches_per_epoch = len(train_dataloader)
     batches_per_cycle = 200
-    num_epochs = 30
+    num_epochs = 20
     T_max = batches_per_epoch * num_epochs // batches_per_cycle
     eta_min = 1e-6
     scheduler = CosineAnnealingLR(optimizer, T_max=T_max, eta_min=eta_min)

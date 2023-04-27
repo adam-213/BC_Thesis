@@ -19,7 +19,7 @@ from pycocotools import mask as mask_util
 from tqdm import tqdm
 
 base_path = pathlib.Path(__file__).parent.absolute()
-coco_path = base_path.joinpath('CCO_TE')
+coco_path = base_path.joinpath('COCOFULL_Dataset')
 channels = [0, 1, 2, 5, 9]
 
 full_loader, stats = createDataLoader(coco_path, bs=1,
@@ -29,9 +29,9 @@ full_loader, stats = createDataLoader(coco_path, bs=1,
                                       dataset_creation=True)
 mean, std = stats
 dataset = full_loader.dataset
-model = rcModel(5, 5, mean[channels], std[channels])
+model = rcModel(5, 6, mean[channels], std[channels])
 
-checkpoint = torch.load("RCNN_UNSCALED/RCNN_Unscaled_29.pth")
+checkpoint = torch.load("RCNN_Unscaled_19.pth")
 model.load_state_dict(checkpoint['model_state_dict'])
 model.cuda()
 model.eval()
@@ -149,7 +149,7 @@ for i, (images, target) in enumerate(tqdm(full_loader)):
             #
             # plt.show()
 
-cocopath = base_path.joinpath('CCO_TE', 'annotations')
+cocopath = base_path.joinpath('COCOFULL_Dataset', 'annotations')
 with open(cocopath.joinpath("merged.json"), 'r') as f:
     j = json.load(f)
 
