@@ -38,7 +38,7 @@ class CustomCocoDetection(CocoDetection):
         # way to get the keys of the npz file, and load them as a list in the same order
         img_arrays = [npz_file[key] for key in npz_file.keys()]
         # dstack with numpy because pytorch refuses to stack different number of channels reasons
-        image = np.dstack(img_arrays).astype(np.float32)
+        image = np.dstack(img_arrays)
         # Channels are in the order of
         # R,G,B, X,Y,Z, NX,NY,NZ ,I
         image = torch.from_numpy(image).type(torch.float32)
@@ -215,7 +215,8 @@ def prepare_batch(batch):
 
     images = filtered_images
     targets = filtered_targets
-
+    if len(images) == 0:
+        return None, None
     # Stack images on the first dimension to get a tensor of shape (batch_size, C, H, W)
     batched_images = torch.stack(images, dim=0).permute(0, 3, 1, 2)
     del images
@@ -255,20 +256,20 @@ def collate_first_stage(images, targets, channels, gray):
     # please don't change the setup of the channels, or this will most likely break
 
     # gaussian blur
-    if random.random() > 0.9:
+    if random.random() > 0.5:
         images = torch.nn.functional.avg_pool2d(images, 3, stride=1, padding=1)
-    # salt and pepper noise
-    if random.random() > 0.9:
-        images = torch.nn.functional.dropout2d(images, p=0.02, training=True)
+    # # salt and pepper noise
+    # if random.random() > 0.9:
+    #     images = torch.nn.functional.dropout2d(images, p=0.02, training=True)
     # poisson noise to simulate photon noise
-    if random.random() > 0.9:
-        lam = images.mean()  # set the Poisson distribution parameter
-        images = torch.poisson(images / lam) * lam
-    # color jitter
-    if random.random() > 0.9:
-        images[:, 0, :, :] = torchvision.transforms.ColorJitter()(images[:, 0, :, :] )
+    # if random.random() > 0.9:
+    #     lam = images.mean()  # set the Poisson distribution parameter
+    #     images = torch.poisson(images / lam) * lam
+    # # color jitter
+    # if random.random() > 0.9:
+    #     images[:, 0, :, :] = torchvision.transforms.ColorJitter()(images[:, 0, :, :] )
     # depth noise
-    if random.random() > 0.9:
+    if random.random() > 0.5:
         images[:, 1, :, :] = images[:, 1, :, :] + torch.randn_like(images[:, 1, :, :]) * 2  # 2mm noise in depth
 
     return images, targets

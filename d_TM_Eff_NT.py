@@ -99,15 +99,15 @@ class PoseEstimationModel(nn.Module):
             nn.BatchNorm1d(4096),
             nn.Hardswish(),
             nn.Dropout(0.3),
-            nn.Linear(4096, 1024),
-            nn.BatchNorm1d(1024),
+            nn.Linear(4096, 2048),
+            nn.BatchNorm1d(2048),
             nn.Hardswish(),
             nn.Dropout(0.2),
-            nn.Linear(1024, 384),
-            nn.BatchNorm1d(384),
+            nn.Linear(2048, 512),
+            nn.BatchNorm1d(512),
             nn.Hardswish(),
             nn.Dropout(0.2),
-            nn.Linear(384, 160),
+            nn.Linear(512, 160),
             nn.Hardswish(),
             nn.Dropout(0.1),
             nn.Linear(160, 3),
@@ -140,8 +140,8 @@ class PoseEstimationModel(nn.Module):
         # normalisation, but im not sure if its helping or hurting
         # magnitude = torch.sqrt(torch.sum(hat_W ** 2, dim=1)).view(-1, 1)
         # hat_W = hat_W / magnitude
-        if random.random() < 0.001: self.plot(hat_W, gt_W, *plotargs)
-        if plot: self.plot(hat_W, gt_W, *plotargs)
+        if random.random() < 0.001: self.plot(hat_W, gt_W, False, *plotargs)
+        if plot: self.plot(hat_W, gt_W, True, *plotargs)
 
         if self.workround:
             hat_W = hat_W[:1]
@@ -160,7 +160,7 @@ class PoseEstimationModel(nn.Module):
 
     from mpl_toolkits.mplot3d import Axes3D
 
-    def plot(self, hat_W, gt_W, img, XYZ, batchepoch=(0, 0)):
+    def plot(self, hat_W, gt_W, forced, img, XYZ, batchepoch=(0, 0)):
         try:
             hat_w = hat_W.cpu()
             gt_w = gt_W.cpu()
@@ -229,7 +229,15 @@ class PoseEstimationModel(nn.Module):
                 loss_value = self.Wloss(hat_W[img_index:img_index + 1], gt_W[img_index:img_index + 1], index=0)
                 ax1.set_title(f"{loss_value}")
 
-                fig.savefig(f"sample{batchepoch[1]}_{batchepoch[0]}_{img_index}.png")
+                from math import pi, cos
+                A, B = hat_w[img_index], gt_w[img_index]
+                dot = np.dot(A, B)
+                magnitude_A = np.linalg.norm(A)
+                magnitude_B = np.linalg.norm(B)
+                theta_degrees = np.arccos(dot / (magnitude_A * magnitude_B)) * 180 / np.pi
+                ax2.set_title(f'3D plot of hat_w and gt_w  - Angle: {theta_degrees:.2f} degrees')
+
+                fig.savefig(f"sample{batchepoch[1]}_{batchepoch[0]}_{img_index}_{forced}.png")
                 plt.close(fig)
 
         except Exception as e:

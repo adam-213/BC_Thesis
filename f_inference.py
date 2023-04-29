@@ -60,7 +60,7 @@ def image_to_world_coords(image_coords, intrinsics, Z):
 
 def prepare_inference():
     base_path = pathlib.Path(__file__).parent.absolute()
-    coco_path = base_path.joinpath('CCO_TE')
+    coco_path = base_path.joinpath('COCOFULL_Dataset')
     channels = [0, 1, 2, 3, 4, 5, 9]
     chans_sel = [0, 1, 2, 5, 6]
     # create unshuffled dataloaders
@@ -72,14 +72,14 @@ def prepare_inference():
     sel = np.array(channels)[chans_sel]
     mean, std = mean[sel], std[sel]
 
-    rcmodel = rcModel(5, 5, mean, std)
+    rcmodel = rcModel(5, 6, mean, std)
 
     # create models
     tmmodel = peModel(3)
 
     # load weights
-    tmmodel.load_state_dict(torch.load('Unscaled_80_stage2.pth')['model_state_dict'])
-    rcmodel.load_state_dict(torch.load(base_path.joinpath("RCNN_UNSCALED", "RCNN_Unscaled_29.pth"))['model_state_dict'])
+    tmmodel.load_state_dict(torch.load('Unscaled_10_stage2.pth')['model_state_dict'])
+    rcmodel.load_state_dict(torch.load(base_path.joinpath("RCNN_Unscaled_19.pth"))['model_state_dict'])
 
     # set models to eval mode
     tmmodel.eval()
@@ -174,7 +174,7 @@ def translation_layer(best, image):
     y2 = y2 * (1 + k)
 
     # get the image with the correct channels - gs,d,a
-    # image = image[:, [0, 1, 2, 3], :, :]
+    # image = image[:, [0, 1, 2, 3], :, :]e
     # # combine the rgb to grayscale by the formula
     # rgb = image[:, [0, 1, 2], :, :]
     # gs = torch.sum(rgb * torch.Tensor([0.2989, 0.5870, 0.1140]).unsqueeze(1).unsqueeze(1).unsqueeze(1), dim=1)
@@ -182,7 +182,7 @@ def translation_layer(best, image):
     # image = torch.cat((gs, image[:, 3:, :, :]), dim=1)
 
     # threshold the mask
-    threshold = 0.7
+    threshold = 0.8
     mask[mask > threshold] = 1
     mask[mask <= threshold] = 0
 
@@ -329,7 +329,7 @@ def find_match(gt, best):
         union = torch.sum(mask + tmask - mask * tmask).float()
         iou = intersection / union
 
-        if iou > 0.8:
+        if iou > 0.75:
             return tm
 
 
@@ -347,9 +347,14 @@ def main():
     # print(rctargets[0]['tm'])
 
     best = infer_mrcnn(rcmodel, rcimages)
-    gttm = find_match(rctargets, best)
+    try:
+        gttm = find_match(rctargets, best)
+    except:
+        gttm = torch.from_numpy(np.Identity(4)).float()
+        print("no match found")
 
-    masked_image_cropped, XYZ, world_coords = translation_layer(best, rcimages)
+    masked_image_cropped, XYZ, world_coords = translation_layer(best, rcimages) # TODO add some sort of centroid heuristic
+    # to get the ones that are closest to the center of the image to get the ones that would be best reachable
     print(XYZ)
     # plt.imshow(masked_image_cropped[0, :3, :, :].permute(1, 2, 0).detach().numpy())
     # plt.show()
@@ -366,7 +371,11 @@ def main():
     print("coords", XYZ)
 
     tmoutputs = tmmodel(masked_image_cropped, XYZ)
-    gt_zvec = gttm[:3, 2]
+    try:
+        gt_zvec = gttm[:3, 2]
+    except:
+        gt_zvec = torch.Tensor([0, 0, 1]).to(device)
+        print("no match found")
     print("Ground truth pose: ", gt_zvec.detach().numpy())
     # print("Predicted pose: ", tmoutputs[:1].detach().numpy())
     loss = tmmodel.Wloss(tmoutputs[:1, :], gt_zvec.unsqueeze(0).to(device))

@@ -91,16 +91,14 @@ def load_image(path="E:\\temp_data.png"):
     return img
 
 
-def compose_matrix(axis_angle, translation_vector, scale_vector):
-    axis_angle, translation_vector = axis_angle.cpu().detach().numpy(), translation_vector.cpu().detach().numpy()
+def compose_matrix(combined, rot, move):
+    combined = combined.clone().cpu().detach().numpy()
+    axis_angle, translation_vector = combined[:3] * rot, combined[3:] * move
+
+    axis_angle, translation_vector = axis_angle.flatten(), translation_vector.flatten()
     # Create a rotation matrix from the axis-angle representation
     r = Rotation.from_rotvec(axis_angle)
     rotation_matrix = r.as_matrix()
-
-    # Scale the rotation matrix columns by the scale factors
-    rotation_matrix[:, 0] *= scale_vector[0]
-    rotation_matrix[:, 1] *= scale_vector[1]
-    rotation_matrix[:, 2] *= scale_vector[2]
 
     # Assemble the 4x4 transformation matrix
     new_matrix = np.zeros((4, 4))
@@ -109,6 +107,3 @@ def compose_matrix(axis_angle, translation_vector, scale_vector):
     new_matrix[3, 3] = 1
 
     return new_matrix
-
-
-

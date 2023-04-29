@@ -81,8 +81,8 @@ def merge(*args):
 
 
 def save_NPZ(arr_dict, save_path, index):
-    # magic
-    np.savez_compressed(str(save_path.joinpath(f'{index}.npz')), **arr_dict)
+    # # todo save as lz4 npy
+    np.save(str(save_path.joinpath(f'{index}.npy')), **arr_dict)
 
 
 # def scale(arr):

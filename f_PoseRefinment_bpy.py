@@ -2,6 +2,7 @@ import bpy
 import numpy as np
 import mathutils, math
 import random, os
+import cv2
 
 import os
 import sys
@@ -10,6 +11,7 @@ from contextlib import contextmanager
 
 @contextmanager
 def stdout_redirected(to=os.devnull):
+    # a workaround for the fact that blender is more verbose than your mom when they meet an old friend
     '''
     import os
 
@@ -44,7 +46,8 @@ class STL_renderer:
         self.width = width
         self.height = height
         self.obj = None
-        self.output_path = "E:\\temp_data.png"
+        self.output_path = "R:\\temp_data.png"
+        self.iter = 0
 
         self.setup_scene()
 
@@ -64,13 +67,16 @@ class STL_renderer:
         bpy.context.scene.eevee.use_bloom = False
         bpy.context.scene.eevee.use_ssr = False
         bpy.context.scene.eevee.use_soft_shadows = False
-        bpy.context.scene.eevee.taa_render_samples = 2
+        bpy.context.scene.eevee.taa_render_samples = 4
         bpy.context.scene.eevee.taa_samples = 2
 
         # Simplify the scene
         bpy.context.scene.render.use_simplify = True
         bpy.context.scene.render.simplify_subdivision_render = 1
-        bpy.context.scene.render.image_settings.file_format = 'PNG'
+        # bpy.context.scene.render.image_settings.file_format = 'PNG'
+
+        # setup the output as BW
+        bpy.context.scene.render.image_settings.color_mode = 'BW'
 
     def setup_camera(self):
         # Create a new camera in Blender
@@ -165,17 +171,28 @@ class STL_renderer:
         obj.active_material = material
 
     def apply_transformation(self, tm):
-        self.obj.matrix_world = mathutils.Matrix(tm)
+        if type(tm) == np.ndarray:
+            tm_np = tm
+        else:
+            tm_np = tm.detach().cpu().numpy()  # Convert the tensor to a NumPy array
+        matrix = mathutils.Matrix(tm_np)
+        self.obj.matrix_world = matrix
 
     def render_object(self):
-        # set the output path
-        bpy.context.scene.render.filepath = self.output_path
-        with stdout_redirected(): # a ridiculous workaround to suppress blender's output
-            bpy.ops.render.render(
-                use_viewport=True,
-                write_still=True,
-                scene=bpy.context.scene.name,
-            )
+        with stdout_redirected():
+            # set path to save the rendered images
+            bpy.context.scene.render.filepath = self.output_path
+
+            bpy.ops.render.render(write_still=True, use_viewport=True)
+
+        # load the rendered image and convert it to a numpy array
+        img = cv2.imread(self.output_path, cv2.IMREAD_GRAYSCALE)
+        img = np.array(img, dtype=np.float32)
+        # threshold the image
+        img[img < 70] = 0
+        img[img >= 255] = 1
+
+        return img
 
     def render_STL(self, path, centroid, zvec):
         # Calculate the initial transformation matrix
@@ -196,10 +213,13 @@ class STL_renderer:
         return init_tm
 
     def render_iter(self, tm):
+        self.iter += 1
         # Apply the transformation
         self.apply_transformation(tm)
 
-        self.render_object()
+        img = self.render_object()
+
+        return img
 
     def delete(self, scene):
         """Something from this helps with memory leaks, but I'm not sure what"""
@@ -238,3 +258,66 @@ class STL_renderer:
         # Delete all fonts
         for font in bpy.data.fonts:
             bpy.data.fonts.remove(font, do_unlink=True)
+
+
+import torch
+import numpy as np
+from pytorch3d.io import load_objs_as_meshes
+from pytorch3d.renderer import (
+    FoVPerspectiveCameras,
+    PointLights,
+    RasterizationSettings,
+    MeshRenderer,
+    MeshRasterizer,
+    SoftSilhouetteShader,
+    TexturesVertex
+)
+
+
+class PyTorch3DRenderer:
+    def __init__(self, intrinsics, width, height):
+        self.intrinsics = intrinsics
+        self.width = width
+        self.height = height
+        self.mesh = None
+
+        # Compute camera properties
+        fov_y = 2 * np.arctan(self.height / (2 * self.intrinsics['fy'])) * (180 / np.pi)
+        fov_x = intrinsics['projector_fovx']
+
+        # Create a camera
+        self.camera = FoVPerspectiveCameras(
+            fov=(fov_y, fov_x),
+            aspect_ratio=float(width) / float(height),
+            device=torch.device("cuda:0")
+        )
+
+        # Create a point light
+        self.lights = PointLights(location=[[0.0, 0.0, 0.0]], device=torch.device("cuda:0"))
+
+        # Create a renderer
+        raster_settings = RasterizationSettings(image_size=self.width)
+        self.renderer = MeshRenderer(
+            rasterizer=MeshRasterizer(cameras=self.camera, raster_settings=raster_settings),
+            shader=SoftSilhouetteShader()
+        )
+
+    def load_mesh(self, stl_file):
+        return load_objs_as_meshes([stl_file], device=torch.device("cuda:0"))
+
+    def render_mesh(self, tm):
+        # Convert transformation matrix to rotation and translation matrices
+        R, T = tm[:3, :3], tm[:3, 3]
+
+        # Render the mesh
+        self.camera.R = torch.tensor(R, dtype=torch.float32, device=torch.device("cuda:0")).unsqueeze(0)
+        self.camera.T = torch.tensor(T, dtype=torch.float32, device=torch.device("cuda:0")).unsqueeze(0)
+        images = self.renderer(self.mesh, cameras=self.camera, lights=self.lights)
+        binary_mask = images[..., 3].detach().cpu().numpy()
+
+        return binary_mask
+
+    def render(self, stl_file, tm):
+        self.mesh = self.load_mesh(stl_file)
+        binary_mask = self.render_mesh(tm)
+        return binary_mask

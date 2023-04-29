@@ -6,7 +6,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from IPython.display import clear_output
 import pathlib
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from b_DataLoader_RCNN import createDataLoader
 from b_MaskRCNN import MaskRCNN
 
@@ -49,7 +49,7 @@ class Trainer:
 
             self.plot_losses(total_loss_list, loss_dict_list, epoch, idx, len(self.train_dataloader))
 
-            self.scheduler.step()
+            self.scheduler.step_cosine_annealing(epoch)
 
         return total_loss_list
 
@@ -75,6 +75,8 @@ class Trainer:
 
                 self.plot_losses(total_loss_list, loss_dict_list, epoch, idx, len(self.val_dataloader), validation=True)
 
+
+
         return total_loss_list, loss_dict_list
 
     def plot_losses(self, loss_list, loss_dict, epoch, batch_idx, total_batches, interval=50, validation=False):
@@ -99,6 +101,8 @@ class Trainer:
             val_losses, val_loss_dict = self.validate(epoch)
 
             self.plot_losses(train_losses, val_loss_dict, epoch, len(self.train_dataloader), len(self.train_dataloader))
+
+            self.scheduler.step_reduce_on_plateau(torch.mean(torch.tensor(val_losses)))
 
             # Save the checkpoint
             if checkpoint_path and epoch % 2 == 0:
@@ -135,13 +139,44 @@ class Trainer:
         return model
 
 
+from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
+
+
+class IntegratedCosineAnnealingReduceOnPlateau:
+    def __init__(self, optimizer, T_max, eta_min=0.0, last_epoch=-1, factor=0.1, patience=2, verbose=False,
+                 threshold=5e-4, cooldown=0, min_lr=0, eps=1e-8):
+        self.cosine_annealing = CosineAnnealingLR(optimizer, T_max, eta_min, last_epoch)
+        self.reduce_on_plateau = ReduceLROnPlateau(optimizer, mode='min', factor=factor, patience=patience,
+                                                   verbose=verbose, threshold=threshold, cooldown=cooldown,
+                                                   min_lr=min_lr, eps=eps)
+
+    def step_cosine_annealing(self, epoch=None):
+        self.cosine_annealing.step(epoch)
+
+    def step_reduce_on_plateau(self, metrics):
+        self.reduce_on_plateau.step(metrics)
+
+    def get_lr(self):
+        return self.cosine_annealing.get_lr()
+
+    def state_dict(self):
+        return {
+            'cosine_annealing': self.cosine_annealing.state_dict(),
+            'reduce_on_plateau': self.reduce_on_plateau.state_dict()
+        }
+
+    def load_state_dict(self, state_dict):
+        self.cosine_annealing.load_state_dict(state_dict['cosine_annealing'])
+        self.reduce_on_plateau.load_state_dict(state_dict['reduce_on_plateau'])
+
+
 def main():
     base_path = pathlib.Path(__file__).parent.absolute()
     coco_path = base_path.joinpath('COCOFULL_Dataset')
     channels = [0, 1, 2, 5, 9]
 
-    train_dataloader, val_dataloader, stats = createDataLoader(coco_path, bs=3, num_workers=6,
-                                                               channels=channels, split=0.9,shuffle=True )
+    train_dataloader, val_dataloader, stats = createDataLoader(coco_path, bs=4, num_workers=6,
+                                                               channels=channels, split=0.9, shuffle=True)
     mean, std = stats
     mean, std = mean[channels], std[channels]
 
@@ -153,11 +188,11 @@ def main():
 
     scaler = GradScaler()
     batches_per_epoch = len(train_dataloader)
-    batches_per_cycle = 200
-    num_epochs = 20
-    T_max = batches_per_epoch * num_epochs // batches_per_cycle
-    eta_min = 1e-6
-    scheduler = CosineAnnealingLR(optimizer, T_max=T_max, eta_min=eta_min)
+    batches_per_cycle = 750
+    num_epochs = 50
+    T_max = batches_per_cycle
+    eta_min = 5e-7
+    scheduler = IntegratedCosineAnnealingReduceOnPlateau(optimizer, T_max, eta_min, )
 
     trainer = Trainer(model, train_dataloader, val_dataloader, optimizer, device, scaler, scheduler)
     # just so it runs basically forever, you can stop it whenever you want - checkpoints are saved every epoch

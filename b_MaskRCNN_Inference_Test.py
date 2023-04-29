@@ -62,8 +62,8 @@ def visualize_output(images, targets, outputs, threshold=0.1):
         boxes = boxes[areas]
 
 
-        # masks = masks[:3]
-        # boxes = boxes[:3]
+        masks = masks[:3]
+        boxes = boxes[:3]
 
         for mask, box, area in zip(masks, boxes, areas):
             print("Mask area: {}".format(area))
@@ -93,6 +93,7 @@ if __name__ == '__main__':
 
 
     outputs = model(images)
+    print(outputs[0]["labels"])
 
     images_cpu = images.cpu()
     visualize_output(images_cpu, targets, outputs, threshold=0.2)

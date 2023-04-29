@@ -30,6 +30,7 @@ class Trainer:
     def train_one_epoch_stage_2(self, epoch):
         self.model.train()
         total_loss_list = []
+        t = None
         for batch, (images_stacked_masked, z_vecs, XYZs) in enumerate(self.train_dataloader):
             if type(z_vecs) == type(None):
                 continue
@@ -56,6 +57,7 @@ class Trainer:
             # Update the optimizer with the combined gradients
             self.scaler.step(self.optimizer)
             self.scaler.update()
+            self.scheduler.step_cosine_annealing(epoch)
 
             # self.scheduler.step()
 
@@ -63,10 +65,12 @@ class Trainer:
             # self.optimizer.step()
             #
             # self.scheduler.step()
+            loss = loss.item()
 
-            total_loss_list.append(loss.item())
+            total_loss_list.append(loss)
 
-            print(f"Epoch {epoch} Batch {batch} Loss: {loss.item()}")
+            print(f"Epoch {epoch} Batch {batch} Loss: {loss} Time: {time.time() - t if t else time.time()}")
+            t = time.time()
         return total_loss_list
 
     def val_one_epoch_stage_2(self, epoch):
@@ -88,10 +92,10 @@ class Trainer:
                 with autocast():
                     weights = self.model(images_stacked_masked, XYZs)
                     val_loss = self.model.loss_W(weights, z_vecs, plot, images_stacked_masked, XYZs, [batch, epoch])
+                loss = val_loss.item()
+                total_val_loss_list.append(loss)
 
-                total_val_loss_list.append(val_loss.item())
-
-                print(f"Validation Epoch {epoch} Batch {batch} Loss: {val_loss.item()}")
+                print(f"Validation Epoch {epoch} Batch {batch} Loss: {loss}")
 
         self.plotbatch += 1
         return total_val_loss_list
@@ -101,7 +105,7 @@ class Trainer:
         stage2_train_losses, stage2_val_losses = [], []
         self.colors = sns.color_palette("husl", num_epochs)
 
-        for epoch in range(num_epochs):
+        for epoch in range(10, num_epochs + 10):
             s2_loss = self.train_one_epoch_stage_2(epoch)
 
             stage2_train_losses.append(s2_loss)
@@ -114,7 +118,7 @@ class Trainer:
             stage2_train_losses = stage2_train_losses[-4:]
             # stage2_val_losses = stage2_val_losses[-4:]
             # self.scheduler.update_lr_on_plateau(np.mean(s2_loss_val))
-            self.scheduler.step(np.mean(s2_loss_val))
+            self.scheduler.step_reduce_on_plateau(np.mean(s2_loss_val))
             t = time.time()
             self.plot_losses(stage2_train_losses, stage2_val_losses, stage=2, epoch=epoch)
             print("plotting took", time.time() - t)
@@ -127,7 +131,7 @@ class Trainer:
                         'model_state_dict': self.model.state_dict(),
                         'optimizer_state_dict': self.optimizer.state_dict(),
                         'scaler_state_dict': self.scaler.state_dict(),
-                        # 'scheduler_state_dict': self.scheduler.state_dict(),
+                         'scheduler_state_dict': self.scheduler.state_dict(),
                     }, checkpoint_path.format(epoch, f"stage{stage}"))
 
     def plot_losses(self, train_losses, val_losses, stage=2, epoch=0):
@@ -168,63 +172,44 @@ class Trainer:
         checkpoint = torch.load(path)
         # state_dict = {k: v for k, v in checkpoint['model_state_dict'].items() if 'W_head' not in k}
         state_dict = checkpoint['model_state_dict']
-        self.model.load_state_dict(state_dict, strict=False)
+        self.model.load_state_dict(state_dict, strict=True)
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
         self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         epoch = checkpoint['epoch']
         return epoch
 
-class DampedCosineScheduler:
-    def __init__(self, optimizer, base_lr, max_lr, base_decay_factor, decay_factor, steps_per_epoch, num_epochs):
-        self.optimizer = optimizer
-        self.base_lr = base_lr
-        self.max_lr = max_lr
-        self.base_decay_factor = base_decay_factor
-        self.decay_factor = decay_factor
-        self.steps_per_epoch = steps_per_epoch
-        self.num_epochs = num_epochs
-        self.current_step = 0
 
-        # Initialize the ReduceLROnPlateau scheduler
-        self.reduce_plateau = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1,
-                                                                         patience=2,
-                                                                         verbose=True, threshold=1e-4,
-                                                                         threshold_mode='rel', cooldown=0, min_lr=0,
-                                                                         eps=1e-8)
+from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
 
-    def step(self):
-        self.current_step += 1
-        epoch = self.current_step // self.steps_per_epoch
-        step_in_epoch = self.current_step % self.steps_per_epoch
 
-        # Calculate the current high value of the learning rate
-        current_max_lr = self.max_lr * (self.decay_factor ** epoch)
+class IntegratedCosineAnnealingReduceOnPlateau:
+    def __init__(self, optimizer, T_max, eta_min=0.0, last_epoch=-1, factor=0.1, patience=2, verbose=False,
+                 threshold=5e-4, cooldown=0, min_lr=0, eps=1e-8):
+        self.cosine_annealing = CosineAnnealingLR(optimizer, T_max, eta_min, last_epoch)
+        self.reduce_on_plateau = ReduceLROnPlateau(optimizer, mode='min', factor=factor, patience=patience,
+                                                   verbose=verbose, threshold=threshold, cooldown=cooldown,
+                                                   min_lr=min_lr, eps=eps)
 
-        # Calculate the current low value of the learning rate
-        current_base_lr = self.base_lr * (self.base_decay_factor ** epoch)
+    def step_cosine_annealing(self, epoch=None):
+        self.cosine_annealing.step(epoch)
 
-        # Calculate the learning rate using a cosine transition between the high and low values
-        lr = current_base_lr + 0.5 * (current_max_lr - current_base_lr) * (
-                1 + np.cos(np.pi * step_in_epoch / self.steps_per_epoch))
+    def step_reduce_on_plateau(self, metrics):
+        self.reduce_on_plateau.step(metrics)
 
-        # Update the learning rate
-        for param_group in self.optimizer.param_groups:
-            param_group['lr'] = lr
+    def get_lr(self):
+        return self.cosine_annealing.get_lr()
 
-    def update_lr_on_plateau(self, val_loss):
-        # Simulate the call to step() with the current validation loss
-        self.reduce_plateau.step(val_loss)
+    def state_dict(self):
+        return {
+            'cosine_annealing': self.cosine_annealing.state_dict(),
+            'reduce_on_plateau': self.reduce_on_plateau.state_dict()
+        }
 
-        # Update the base_lr and max_lr with the reduced learning rate
-        factor = self.reduce_plateau.factor
-        print(f"Reducing learning rate by a factor of {factor}")
-        for param_group in self.optimizer.param_groups:
-            current_lr = param_group['lr']
-            new_lr = current_lr * factor
-            self.base_lr = self.base_lr * factor
-            self.max_lr = self.max_lr * factor
-            param_group['lr'] = new_lr
+    def load_state_dict(self, state_dict):
+        self.cosine_annealing.load_state_dict(state_dict['cosine_annealing'])
+        self.reduce_on_plateau.load_state_dict(state_dict['reduce_on_plateau'])
+
 
 def s2_train():
     # Modify these lines to use your custom dataloader
@@ -233,7 +218,7 @@ def s2_train():
     channels = [0, 1, 2, 5, 9]
     gray = True
 
-    train_dataloader, val_dataloader = createDataLoader(coco_path, batchsize=3, channels=channels, num_workers=8,
+    train_dataloader, val_dataloader = createDataLoader(coco_path, batchsize=3, channels=channels, num_workers=10,
                                                         shuffle=True, gray=gray)
 
     # model = PoseEstimationModel(len(channels) - 2 if gray else len(channels))
@@ -241,35 +226,21 @@ def s2_train():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
-    num_epochs = 50
+    num_epochs = 20
     scaler = GradScaler()
 
     # Set the base and max learning rates
-    base_lr = 0.00009
+    base_lr = 0.00005
 
-    optimizer = torch.optim.RAdam(model.parameters(), lr=base_lr, weight_decay=0.0001)
+    optimizer = torch.optim.RAdam(model.parameters(), lr=base_lr, weight_decay=0.0001, eps=1e-8)
 
-    # Initialize the DampedCosineScheduler with decay factors for both base and max learning rates
-    # scheduler = DampedCosineScheduler(optimizer, base_lr=base_lr, max_lr=max_lr,
-    #                                   decay_factor=0.5, base_decay_factor=0.7,
-    #                                   steps_per_epoch=len(train_dataloader), num_epochs=num_epochs)
-
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=2,
-                                                           verbose=True, threshold=1e-3,
-                                                           threshold_mode='rel', cooldown=0, min_lr=0,
-                                                           eps=1e-8)
-    #
-    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=20, eta_min=0.0001, last_epoch=-1)
-
-    # scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=0.00025,
-    #                                                 steps_per_epoch=len(train_dataloader),
-    #                                                 epochs=num_epochs, anneal_strategy='cos', cycle_momentum=False,
-    #                                                 base_momentum=0.85, max_momentum=0.95, div_factor=15.0,
-    #                                                 final_div_factor=10000.0, last_epoch=-1, verbose=False,
-    #                                                 pct_start=0.3)
+    # Set the scheduler
+    scheduler = IntegratedCosineAnnealingReduceOnPlateau(optimizer, T_max=num_epochs, eta_min=base_lr / 100,
+                                                         factor=0.1, patience=2, verbose=True, threshold=5e-4,
+                                                         cooldown=0, min_lr=0, eps=1e-8)
 
     trainer = Trainer(model, train_dataloader, val_dataloader, optimizer, device, scaler, scheduler)
-    # trainer.load_checkpoint("pose_estimation_model_VT175_5_stage2.pth")
+    trainer.load_checkpoint("Unscaled_10_stage2.pth")
     # trainer.scheduler.pct_start = 0.1
 
     save_path = "Unscaled_{}_{}.pth"
@@ -284,8 +255,10 @@ def s2_train():
         'scheduler_state_dict': scheduler.state_dict(),
     }, "full50.pth")
 
+
 if __name__ == '__main__':
     # s1_train()
-   #time.sleep(3000)
+    # time.sleep(3000)
     s2_train()
+
     # inference()
