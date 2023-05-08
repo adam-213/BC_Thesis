@@ -2,7 +2,7 @@ from f_inference import main as network_main
 import numpy as np
 from PIL import Image
 from scipy.spatial.transform import Rotation
-
+import torch
 INTRINSICS = {
     'fx': 1181.077335,
     'fy': 1181.077335,
@@ -92,7 +92,8 @@ def load_image(path="E:\\temp_data.png"):
 
 
 def compose_matrix(combined, rot, move):
-    combined = combined.clone().cpu().detach().numpy()
+    if type(combined) == torch.Tensor:
+        combined = combined.clone().cpu().detach().numpy()
     axis_angle, translation_vector = combined[:3] * rot, combined[3:] * move
 
     axis_angle, translation_vector = axis_angle.flatten(), translation_vector.flatten()

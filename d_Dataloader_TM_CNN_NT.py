@@ -194,6 +194,8 @@ def prepare_targets(targets) -> list:
         prepared_target['names'] = prepared_target['names'][filt]
         prepared_target['box'] = np.array(prepared_target['box'])[filt].tolist()
         prepared_target['centroid'] = np.array(prepared_target['centroid'])[filt].tolist()
+        prepared_target['centroid'] = np.array(
+            [(*world_to_image_coords((x, y, z), intrinsics), z) for x, y, z in prepared_target['centroid']])
         if len(prepared_target['labels']) == 0:
             prepared_target = None
 
@@ -292,12 +294,13 @@ def collate_second_stage(images, targets):
     gt_boxes = [target['box'] for target in targets]
     # Get the Centroids
     gt_centroids = [target['centroid'] for target in targets]
+    gt_move = [target['move'] for target in targets]
     return_list = []
     for i in range(len(targets)):
         target_dict = {"gt_masks": gt_masks[i], "gt_world_depth": gt_world_depth[i],
                        "gt_world_coords": gt_world_coords[i],
                        "gt_label_names": gt_label_names[i], "gt_z_direction_vectors": gt_z_direction_vectors[i],
-                       "gt_boxes": gt_boxes[i], "gt_centroids": gt_centroids[i]}
+                       "gt_boxes": gt_boxes[i], "gt_centroids": gt_centroids[i], "gt_move": gt_move[i]}
         return_list.append(target_dict)
 
     return images, return_list
@@ -417,18 +420,22 @@ def collate_fifth_stage(images, targets):
     gt_centroids = [torch.Tensor(target['gt_centroids']) for target in targets]
     gt_centroids = torch.cat(gt_centroids, dim=0)
 
+    gt_zs = [torch.Tensor(target['gt_move'][:, 2]) for target in targets]
+    gt_zs = torch.cat(gt_zs, dim=0)
+
     # stack images
     images = torch.cat(images, dim=0)
 
-    return images, gt_z_dirs, gt_centroids
+    return images, gt_z_dirs, gt_centroids, gt_zs
 
 
-def collate_permute_microbatch(images, gt_z_dirs, gt_centroids):
+def collate_permute_microbatch(images, gt_z_dirs, gt_centroids, gt_zs):
     perm = torch.randperm(images.shape[0])
     images = images[perm]
     gt_z_dirs = gt_z_dirs[perm]
     gt_centroids = gt_centroids[perm]
-    return images, gt_z_dirs, gt_centroids
+    gt_zs = gt_zs[perm]
+    return images, gt_z_dirs, gt_centroids, gt_zs
 
 
 def collate_TM_GT(batch, channels=None, gray=True):
@@ -439,7 +446,7 @@ def collate_TM_GT(batch, channels=None, gray=True):
     images, targets = collate_first_stage(images, targets, channels, gray)
     # if there is nothing to work with, return None
     if images is None or targets is None:
-        return None, None, None
+        return None, None, None, None
         # extract the targets into a usable data structure (dict)
     images, gt_targets = collate_second_stage(images, targets)
     # get the crop size, either fixed or based on the max area box
@@ -449,11 +456,11 @@ def collate_TM_GT(batch, channels=None, gray=True):
     # visualize the images
     # collate_viz(images, targets, z_vec, j)
     # prepare the actuall target for the model + prepare centroids for possible input augmentation
-    images, gt_z_dirs, gt_centroids = collate_fifth_stage(cropped_images, targets)
+    images, gt_z_dirs, gt_centroids, gt_zs = collate_fifth_stage(cropped_images, targets)
     # permute the microbatch
-    images, gt_z_dirs, gt_centroids = collate_permute_microbatch(images, gt_z_dirs, gt_centroids)
+    images, gt_z_dirs, gt_centroids, gt_zs = collate_permute_microbatch(images, gt_z_dirs, gt_centroids, gt_zs)
 
-    return images, gt_z_dirs, gt_centroids
+    return images, gt_z_dirs, gt_centroids, gt_zs
 
 
 class CollateWrapper:

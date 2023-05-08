@@ -178,7 +178,7 @@ class Preprocessor:
 
         return result, mean, std
 
-    def worker(self, use_mp=False):
+    def worker(self, start, number):
         """Process all scans"""
         # create categoies by iterating over all scans - but only on labels_info
         print('Creating categories')
@@ -192,51 +192,47 @@ class Preprocessor:
 
         # load stls for the parts so we can compute occlusion
         stls = {}
-        stls["part_thruster"] = "stl/part_thruster1.stl"
-        stls["part_cogwheel"] = "stl/part_cogwheel1.stl"
-        stls["part_armadillo"] = "stl/part_armadillo.stl"
+        for item in ["cogwheel_normalized", "thruster_normalized", "cchannel_normalized", "double_normalized",
+                     "halfcuboid_normalized", "halfthruster_normalized", "hanger_normalized", "lockinsert_normalized",
+                     "squaredonut_normalized", "squaretube_normalized", "tube_normalized"]:
+            name = "part_" + item
+            stls[name] = f"stl/{name}.stl"
 
-        # start muliprocessing pool
-        if use_mp:
-            pool = mp.Pool(mp.cpu_count())
-            # process all scans
-            results = []
-            for i, scan_path in enumerate(self.scans):
-                results.append(pool.apply_async(self.process, args=(scan_path, i, stls)))
-            pool.close()
-            pool.join()
-            results = [r.get() for r in results]
-            results, means, stds = zip(*results)
-        else:
-            results = []
-            # for i, scan_path in enumerate(tqdm(np.array(self.scans)[list(np.random.randint(0, len(self.scans), 25))])):
-            start = 9000
-            stop = 500
-            for i, scan_path in enumerate(tqdm(self.scans[start:])):
-                i = i + start
-                if i == stop + start:
-                    res, means, stds = zip(*results)
-                    # combine the results into one json
-                    print('Creating json')
-                    print("categories: ", self.categories)
-                    create_json(res, self.categories, self.coco_path, means, stds, f"_End_{start}_{stop+start}")
-                    return
-                results.append(self.process(scan_path, i, stls))
-                if i % 50 == 0 and i != start:
-                    res, means, stds = zip(*results)
+        results = []
+        # for i, scan_path in enumerate(tqdm(np.array(self.scans)[list(np.random.randint(0, len(self.scans), 25))])):
+        for i, scan_path in enumerate(tqdm(self.scans[start:])):
+            i = i + start
+            if i == number + start:
+                res, means, stds = zip(*results)
+                # combine the results into one json
+                print('Creating json')
+                print("categories: ", self.categories)
+                create_json(res, self.categories, self.coco_path, means, stds, f"_End_{start}_{number + start}")
+                return
+            results.append(self.process(scan_path, i, stls))
+            if i % 50 == 0 and i != start:
+                res, means, stds = zip(*results)
 
-                    # combine the results into one json
-                    print('Creating json')
-                    print("categories: ", self.categories)
-                    create_json(res, self.categories, self.coco_path, means, stds, i)
+                # combine the results into one json
+                print('Creating json')
+                print("categories: ", self.categories)
+                create_json(res, self.categories, self.coco_path, means, stds, i)
 
         print('Creating json')
         print("categories: ", self.categories)
         create_json(results, self.categories, self.coco_path, means, stds, "all")
 
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Preprocessor worker")
+    parser.add_argument("--start", type=int, required=False, help="Start index for the worker", default=0)
+    parser.add_argument("--number", type=int, required=False, help="Number of scans to process", default=100)
+
+    args = parser.parse_args()
+
     preprocessor = Preprocessor()
     preprocessor.load_scan_paths()
-    preprocessor.worker(use_mp=False)
-    print('Done')
+    preprocessor.worker(args.start, args.number)

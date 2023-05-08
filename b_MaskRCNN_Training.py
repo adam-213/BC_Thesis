@@ -9,6 +9,9 @@ import pathlib
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from b_DataLoader_RCNN import createDataLoader
 from b_MaskRCNN import MaskRCNN
+import numpy as np
+import seaborn as sns
+from copy import deepcopy
 
 
 class Trainer:
@@ -20,6 +23,11 @@ class Trainer:
         self.device = device
         self.scaler = scaler
         self.scheduler = scheduler
+
+    def uncuda(self, lossdict):
+        for k, v in lossdict.items():
+            lossdict[k] = v.cpu().detach().numpy().astype(np.float16)
+        return lossdict
 
     def train_one_epoch(self, epoch):
         self.model.train()
@@ -37,24 +45,24 @@ class Trainer:
 
             if idx == 0:
                 loss_dict_list = {k: [] for k in loss_dict.keys()}  # Initialize loss_dict_list here
+                loss_dict_list['total_loss'] = []
+
+            loss_dict['total_loss'] = losses
 
             self.scaler.scale(losses).backward()
             self.scaler.step(self.optimizer)
             self.scaler.update()
 
             print(f"Loss: {losses.item()}, Batch: {idx}/{len(self.train_dataloader)}, Epoch: {epoch}")
-            total_loss_list.append(losses.item())
-            for key, value in loss_dict.items():
-                loss_dict_list[key].append(value.item())
-
-            self.plot_losses(total_loss_list, loss_dict_list, epoch, idx, len(self.train_dataloader))
 
             self.scheduler.step_cosine_annealing(epoch)
+
+            total_loss_list.append(self.uncuda(loss_dict))
 
         return total_loss_list
 
     def validate(self, epoch):
-        # self.model.eval()
+        # self.model.eval() # this cant be used here because it will produce images not loss values
         total_loss_list = []
 
         with torch.no_grad():
@@ -62,59 +70,103 @@ class Trainer:
                 images = [image.to(self.device) for image in images]
                 targets = [{k: v.to(self.device) for k, v in t.items()} for t in targets]
 
-                loss_dict = self.model(images, targets)
-                losses = sum(loss for loss in loss_dict.values())
+                with autocast():
+                    loss_dict = self.model(images, targets)
+                    losses = sum(loss for loss in loss_dict.values())
 
                 if idx == 0:
                     loss_dict_list = {k: [] for k in loss_dict.keys()}  # Initialize loss_dict_list here
+                    loss_dict_list['total_loss'] = []
+
+                loss_dict['total_loss'] = losses
 
                 print(f"Validation Loss: {losses.item()}, Batch: {idx}/{len(self.val_dataloader)}, Epoch: {epoch}")
-                total_loss_list.append(losses.item())
-                for key, value in loss_dict.items():
-                    loss_dict_list[key].append(value.item())
+                for k, v in loss_dict.items():
+                    loss_dict_list[k].append(v.item())
+                loss_dict_list['total_loss'].append(losses.item())
+                total_loss_list.append(self.uncuda(loss_dict))
 
-                self.plot_losses(total_loss_list, loss_dict_list, epoch, idx, len(self.val_dataloader), validation=True)
+        return total_loss_list
 
+    def plot_losses(self, train_loss_dicts, val_loss_dicts, epoch=0):
+        # Flatten the nested lists
+        train_losses = [item for sublist in train_loss_dicts for item in sublist]
+        val_losses = [item for sublist in val_loss_dicts for item in sublist]
 
+        fig, axes = plt.subplots(3, 2, figsize=(15, 15))
+        axes = axes.flatten()
 
-        return total_loss_list, loss_dict_list
+        for idx, key in enumerate(train_losses[0].keys()):
+            ax = axes[idx]
 
-    def plot_losses(self, loss_list, loss_dict, epoch, batch_idx, total_batches, interval=50, validation=False):
-        if batch_idx % interval == 0:
-            clear_output(wait=True)
-            plt.figure(figsize=(10, 5))
-            plt.plot(loss_list, label='Total Loss' + (' (Validation)' if validation else ''))
+            train_loss_key = [loss_dict[key] for loss_dict in train_losses]
+            val_loss_key = [loss_dict[key] for loss_dict in val_losses]
 
-            for key, value in loss_dict.items():
-                plt.plot(value, label=f'{key} Loss' + (' (Validation)' if validation else ''))
+            train_loss_key = np.array(train_loss_key).astype(np.float64)
+            val_loss_key = np.array(val_loss_key).astype(np.float64)
 
-            plt.xlabel('Batches')
-            plt.ylabel('Loss')
-            plt.legend()
-            plt.title(f'Epoch {epoch}, Batch {batch_idx}/{total_batches}' + (' (Validation)' if validation else ''))
-            plt.grid()
-            plt.savefig(f'losses{batch_idx}_{epoch}.png')
+            # Remove or replace NaN values
+            train_loss_key = np.nan_to_num(train_loss_key, nan=np.nanmean(train_loss_key))
+            val_loss_key = np.nan_to_num(val_loss_key, nan=np.nanmean(val_loss_key))
 
-    def train(self, num_epochs, checkpoint_path=None):
-        for epoch in range(num_epochs):
+            train_loss_len = len(train_loss_key)  # Calculate the offset for the validation loss curve
+            val_loss_x = np.arange(train_loss_len, train_loss_len + len(val_loss_key))  # Add the offset to the x values
+
+            # Add regression lines
+            ax.plot(train_loss_key, label=f"Train {key}", color='lightblue')
+            ax.plot(val_loss_x, val_loss_key, label=f"Validation {key}", color='lightcoral')
+
+            sns.regplot(x=np.arange(len(train_loss_key)), y=train_loss_key, ax=ax, label=f"Train {key} RegLine",
+                        color='blue',
+                        scatter=False, order=4)
+            sns.regplot(x=val_loss_x, y=val_loss_key, ax=ax, label=f"Validation {key} RegLine", color="orange",
+                        scatter=False,
+                        order=4)
+
+            ax.set_title(f"Epoch {epoch} Losses for {key}")
+            ax.set_xlabel("Batch")
+            ax.set_ylabel("Loss")
+            ax.legend()
+
+        plt.tight_layout()
+        plt.savefig(f"maskrcnn_epoch{epoch}.png")
+        plt.close()
+
+    def train(self, num_epochs, checkpoint_path=None, load_checkpoint=None):
+        if load_checkpoint:
+            trainloss, valloss, epoch = self.load_checkpoint(load_checkpoint)
+            epoch += 1 # Start from the next epoch because the checkpoint is saved after the epoch is finished
+        else:
+            trainloss, valloss = [], []
+            epoch = 0
+        write = False
+        for epoch in range(epoch, num_epochs):
             train_losses = self.train_one_epoch(epoch)
-            val_losses, val_loss_dict = self.validate(epoch)
+            trainloss.append(train_losses)
+            val_losses = self.validate(epoch)
+            valloss.append(val_losses)
 
-            self.plot_losses(train_losses, val_loss_dict, epoch, len(self.train_dataloader), len(self.train_dataloader))
+            trainloss = trainloss[-5:]
+            valloss = valloss[-10:]
 
-            self.scheduler.step_reduce_on_plateau(torch.mean(torch.tensor(val_losses)))
+            self.plot_losses(trainloss, valloss, epoch)
+
+            steploss = np.sum([loss["total_loss"] for loss in val_losses])
+
+            self.scheduler.step_reduce_on_plateau(torch.mean(torch.tensor(steploss)))
 
             # Save the checkpoint
-            if checkpoint_path and epoch % 2 == 0:
+            if checkpoint_path and epoch % 2 == 0 and write:
                 torch.save({
                     'epoch': epoch,
                     'model_state_dict': self.model.state_dict(),
                     'optimizer_state_dict': self.optimizer.state_dict(),
                     'scaler_state_dict': self.scaler.state_dict(),
-                    'train_losses': train_losses,
-                    'val_losses': val_losses,
-                    'val_loss_dict': val_loss_dict
+                    'train_losses': trainloss,
+                    'val_losses': valloss,
                 }, checkpoint_path.format(epoch))
+
+            write = True  # prevent overriting the checkpoint on the first after loading / first epoch
 
         if checkpoint_path:
             torch.save({
@@ -122,28 +174,27 @@ class Trainer:
                 'model_state_dict': self.model.state_dict(),
                 'optimizer_state_dict': self.optimizer.state_dict(),
                 'scaler_state_dict': self.scaler.state_dict(),
-                'train_losses': train_losses,
-                'val_losses': val_losses,
-                'val_loss_dict': val_loss_dict
+                'train_losses': trainloss,
+                'val_losses': valloss,
             }, checkpoint_path.format(epoch))
 
-    def load_checkpoint(self, checkpoint_path, model):
+    def load_checkpoint(self, checkpoint_path):
         checkpoint = torch.load(checkpoint_path)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        # optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        # scaler.load_state_dict(checkpoint['scaler_state_dict'])
-        # epoch = checkpoint['epoch']
-        # train_losses = checkpoint['train_losses']
-        # val_losses = checkpoint['val_losses']
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
+        epoch = checkpoint['epoch']
+        train_losses = checkpoint['train_losses']
+        val_losses = checkpoint['val_losses']
         # val_loss_dict = checkpoint['val_loss_dict']
-        return model
+        return train_losses, val_losses, epoch
 
 
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
 
 
 class IntegratedCosineAnnealingReduceOnPlateau:
-    def __init__(self, optimizer, T_max, eta_min=0.0, last_epoch=-1, factor=0.1, patience=2, verbose=False,
+    def __init__(self, optimizer, T_max, eta_min=0.0, last_epoch=-1, factor=0.1, patience=2, verbose=True,
                  threshold=5e-4, cooldown=0, min_lr=0, eps=1e-8):
         self.cosine_annealing = CosineAnnealingLR(optimizer, T_max, eta_min, last_epoch)
         self.reduce_on_plateau = ReduceLROnPlateau(optimizer, mode='min', factor=factor, patience=patience,
@@ -175,13 +226,14 @@ def main():
     coco_path = base_path.joinpath('COCOFULL_Dataset')
     channels = [0, 1, 2, 5, 9]
 
-    train_dataloader, val_dataloader, stats = createDataLoader(coco_path, bs=4, num_workers=6,
+    train_dataloader, val_dataloader, stats = createDataLoader(coco_path, bs=3, num_workers=8,
                                                                channels=channels, split=0.9, shuffle=True)
     mean, std = stats
     mean, std = mean[channels], std[channels]
-
-    model = MaskRCNN(5, 6, mean, std)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=0.0001)
+    cats = train_dataloader.dataset.dataset.coco.cats
+    model = MaskRCNN(5, len(cats), mean, std)
+    # model = MaskRCNN(5, 91, mean, std)
+    optimizer = torch.optim.RAdam(model.parameters(), lr=0.001, weight_decay=0.0001)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
@@ -189,7 +241,7 @@ def main():
     scaler = GradScaler()
     batches_per_epoch = len(train_dataloader)
     batches_per_cycle = 750
-    num_epochs = 50
+    num_epochs = 35
     T_max = batches_per_cycle
     eta_min = 5e-7
     scheduler = IntegratedCosineAnnealingReduceOnPlateau(optimizer, T_max, eta_min, )
@@ -197,7 +249,7 @@ def main():
     trainer = Trainer(model, train_dataloader, val_dataloader, optimizer, device, scaler, scheduler)
     # just so it runs basically forever, you can stop it whenever you want - checkpoints are saved every epoch
     save_path = "RCNN_Unscaled_{}.pth"
-    trainer.train(num_epochs, save_path)
+    trainer.train(num_epochs, save_path, load_checkpoint="RCNN_Unscaled_{}.pth".format(30))
 
 
 if __name__ == '__main__':

@@ -80,6 +80,7 @@ class PoseEstimationModel(nn.Module):
     def __init__(self, num_channels=7):
         super(PoseEstimationModel, self).__init__()
         self.workround = False
+        self.Zloss = nn.MSELoss()
 
         self.Wloss = CustomLoss(use_geodesic_loss=True,
                                 alpha=1.0,
@@ -95,7 +96,7 @@ class PoseEstimationModel(nn.Module):
         self.backbone.head = nn.Identity()
 
         self.W_head = nn.Sequential(
-            nn.Linear(512, 4096),
+            nn.Linear(512 + 3, 4096),
             nn.BatchNorm1d(4096),
             nn.Hardswish(),
             nn.Dropout(0.3),
@@ -110,7 +111,7 @@ class PoseEstimationModel(nn.Module):
             nn.Linear(512, 160),
             nn.Hardswish(),
             nn.Dropout(0.1),
-            nn.Linear(160, 3),
+            nn.Linear(160, 4),
             nn.Tanh()  # normalize to [-1, 1] as the output is a direction vector aka a unit vector
         )
 
@@ -129,27 +130,31 @@ class PoseEstimationModel(nn.Module):
         try:
             x = self.layer(self.input_norm, x)
             backbonex = self.layer(self.backbone, x)
-            # x = torch.cat((backbonex, XYZ), dim=1)
-            x = self.layer(self.W_head, backbonex)
+            stackedx = torch.cat((backbonex, XYZ), dim=1)
+            x = self.layer(self.W_head, stackedx)
             return x
         except OverflowError as e:
             print(e)
             return None
 
-    def loss_W(self, hat_W, gt_W, plot, *plotargs):
+    def loss_W(self, hat_W, gt_W, gt_z, plot, *plotargs):
         # normalisation, but im not sure if its helping or hurting
         # magnitude = torch.sqrt(torch.sum(hat_W ** 2, dim=1)).view(-1, 1)
         # hat_W = hat_W / magnitude
-        if random.random() < 0.001: self.plot(hat_W, gt_W, False, *plotargs)
-        if plot: self.plot(hat_W, gt_W, True, *plotargs)
+        if random.random() < 0.001: self.plot(hat_W, gt_W, gt_z, False, *plotargs)
+        if plot: self.plot(hat_W, gt_W, gt_z, True, *plotargs)
 
         if self.workround:
             hat_W = hat_W[:1]
             gt_W = gt_W[:1]
             self.workround = False
 
-        wloss = self.Wloss(hat_W, gt_W)
-        return wloss
+        wloss = self.Wloss(hat_W[:, :3], gt_W)
+        zloss = self.Zloss(hat_W[:, 3], gt_z / 1000)
+        # /1000 to get it into the range possible for tanh the dataset has max deph of 1000
+        loss = wloss + zloss * 3.6  # 3.6 is a magic number that makes the loss of z and w roughly equal
+        # because wloss [0,3.6] and zloss [0,1]
+        return loss
 
     def layer(self, func, *data):
         try:
@@ -160,15 +165,17 @@ class PoseEstimationModel(nn.Module):
 
     from mpl_toolkits.mplot3d import Axes3D
 
-    def plot(self, hat_W, gt_W, forced, img, XYZ, batchepoch=(0, 0)):
+    def plot(self, hat_W, gt_W, gt_z, forced, img, XYZ, batchepoch=(0, 0)):
         try:
             hat_w = hat_W.cpu()
             gt_w = gt_W.cpu()
             img = img.cpu()
             XYZ = XYZ.cpu()
+            gt_z = gt_z.cpu()
 
             hat_W = hat_w.clone().cuda()
             gt_W = gt_w.clone().cuda()
+            gt_z = gt_z.clone().cuda()
 
             hat_w = hat_w.detach().numpy()
             gt_w = gt_w.detach().numpy()
@@ -216,7 +223,7 @@ class PoseEstimationModel(nn.Module):
                 # Calculate the arc using Spherical Linear Interpolation (SLERP)
                 num_points = 100
                 arc_points = np.array(
-                    [slerp(hat_w[img_index], gt_w[img_index], t) for t in np.linspace(0, 1, num_points)])
+                    [slerp(hat_w[:, :3][img_index], gt_w[img_index], t) for t in np.linspace(0, 1, num_points)])
                 # Plot the arc
                 ax2.plot(arc_points[:, 0], arc_points[:, 1], arc_points[:, 2], color='r', alpha=0.5)
 
@@ -226,11 +233,13 @@ class PoseEstimationModel(nn.Module):
                 ax2.set_zlim(-1, 1)
                 ax2.set_box_aspect((1, 1, 1))
 
-                loss_value = self.Wloss(hat_W[img_index:img_index + 1], gt_W[img_index:img_index + 1], index=0)
-                ax1.set_title(f"{loss_value}")
+                loss_value = self.Wloss(hat_W[:, :3][img_index:img_index + 1], gt_W[:, :3][img_index:img_index + 1],
+                                        index=0)
+                ax1.set_title(
+                    f"{loss_value} - {self.Zloss(hat_W[:, 3], gt_z / 1000)}")
 
                 from math import pi, cos
-                A, B = hat_w[img_index], gt_w[img_index]
+                A, B = hat_w[:, :3][img_index], gt_w[img_index]
                 dot = np.dot(A, B)
                 magnitude_A = np.linalg.norm(A)
                 magnitude_B = np.linalg.norm(B)
@@ -241,7 +250,7 @@ class PoseEstimationModel(nn.Module):
                 plt.close(fig)
 
         except Exception as e:
-            print("wtf", e)
+            raise e
 
 
 def slerp(p0, p1, t):

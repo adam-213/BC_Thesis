@@ -166,7 +166,7 @@ def translation_layer(best, image):
         centroid_x, centroid_y, depth_value = None, None, None
     x1, y1, x2, y2 = bbox
 
-    # expand the bbox by k
+    # expand the bbox by k # TODO NO for the deit it needs toe be 224x224 fixed
     k = 0.05
     x1 = x1 * (1 - k)
     y1 = y1 * (1 - k)
@@ -362,7 +362,7 @@ def main():
     # pnp_test(masked_image_cropped.clone(), ptc, world_coords)
 
     # center crop with 224x224
-    masked_image_cropped = torchvision.transforms.functional.center_crop(masked_image_cropped, (224, 224))
+    masked_image_cropped = torchvision.transforms.functional.center_crop(masked_image_cropped, (224, 224)) # TODO move into translation layer
 
     # vis_mask(rcimages, best, XYZ)
 

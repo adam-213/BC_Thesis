@@ -32,8 +32,13 @@ def merge_coco_jsons(json_files, save_path):
     merged_json = {}
     mean_list = []
     std_list = []
+    idx = 0
 
-    for idx, file in enumerate(json_files):
+    for file in json_files:
+        # only merge the ones that contain the word end
+        if 'end' not in file.lower():
+            continue
+        print(f"Merging {file}...")
         with open(file, 'r') as f:
             coco_json = json.load(f)
 
@@ -54,6 +59,8 @@ def merge_coco_jsons(json_files, save_path):
         mean_list.append(coco_json['image_stats']['mean'])
         std_list.append(coco_json['image_stats']['std'])
 
+        idx += 1
+
     merged_json['image_stats'] = {
         'mean': np.mean(mean_list, axis=0).astype(float).tolist(),
         'std': np.mean(std_list, axis=0).astype(float).tolist()
@@ -64,7 +71,10 @@ def merge_coco_jsons(json_files, save_path):
 
 
 if __name__ == '__main__':
-    json_files = glob.glob('./*.json')
-    save_path = Path('merged.json')
+    abspath = Path(__file__).parent.absolute()
+    coco_path = abspath.joinpath('COCOFULL_Dataset')
+    jsonspath = coco_path.joinpath('annotations')
+    json_files = glob.glob(str(jsonspath.joinpath('*.json')))
+    save_path = jsonspath.joinpath('merged.json')
     merge_coco_jsons(json_files, save_path)
     validate_merged_coco_json(save_path)

@@ -3,10 +3,26 @@ import numpy as np
 import mathutils, math
 import random, os
 import cv2
-
+import f_PoseRefinment_Utils as utils
 import os
 import sys
 from contextlib import contextmanager
+import torch
+import threading
+
+import pygame
+from pygame.locals import *
+from OpenGL.GL import *
+from OpenGL.GLU import *
+import numpy as np
+from stl import mesh
+import numpy as np
+import stl
+import OpenGL.GL as gl
+import OpenGL.GLU as glu
+import math
+from copy import deepcopy
+from PIL import Image
 
 
 @contextmanager
@@ -40,8 +56,9 @@ def stdout_redirected(to=os.devnull):
             # CLOEXEC may be different
 
 
-class STL_renderer:
+class STL_renderer(torch.nn.Module):
     def __init__(self, INTRINSICS, width, height):
+        super().__init__()
         self.INTRINSICS = INTRINSICS
         self.width = width
         self.height = height
@@ -58,21 +75,22 @@ class STL_renderer:
         self.create_point_light((0, 0, 0), energy=20000000)
 
         # Set render settings
-        bpy.context.scene.render.engine = 'BLENDER_EEVEE'
+        # bpy.context.scene.render.engine = 'BLENDER_EEVEE'
         bpy.context.scene.render.resolution_percentage = 100
         bpy.context.scene.render.resolution_x = self.width
         bpy.context.scene.render.resolution_y = self.height
+        # set to cuda on evvee
 
-        # Set EEVEE settings
-        bpy.context.scene.eevee.use_bloom = False
-        bpy.context.scene.eevee.use_ssr = False
-        bpy.context.scene.eevee.use_soft_shadows = False
-        bpy.context.scene.eevee.taa_render_samples = 4
-        bpy.context.scene.eevee.taa_samples = 2
+        # # Set EEVEE settings
+        # bpy.context.scene.eevee.use_bloom = False
+        # bpy.context.scene.eevee.use_ssr = False
+        # bpy.context.scene.eevee.use_soft_shadows = False
+        # bpy.context.scene.eevee.taa_render_samples = 2
+        # bpy.context.scene.eevee.taa_samples = 1
 
         # Simplify the scene
-        bpy.context.scene.render.use_simplify = True
-        bpy.context.scene.render.simplify_subdivision_render = 1
+        # bpy.context.scene.render.use_simplify = True
+        # bpy.context.scene.render.simplify_subdivision_render = 1
         # bpy.context.scene.render.image_settings.file_format = 'PNG'
 
         # setup the output as BW
@@ -183,14 +201,14 @@ class STL_renderer:
             # set path to save the rendered images
             bpy.context.scene.render.filepath = self.output_path
 
-            bpy.ops.render.render(write_still=True, use_viewport=True)
+            bpy.ops.render.opengl(animation=False, sequencer=False, write_still=True)
 
         # load the rendered image and convert it to a numpy array
         img = cv2.imread(self.output_path, cv2.IMREAD_GRAYSCALE)
         img = np.array(img, dtype=np.float32)
         # threshold the image
         img[img < 70] = 0
-        img[img >= 255] = 1
+        img[img >= 70] = 1
 
         return img
 
@@ -212,7 +230,8 @@ class STL_renderer:
 
         return init_tm
 
-    def render_iter(self, tm):
+    def render_iter(self, *args):
+        tm = utils.compose_matrix(*args)
         self.iter += 1
         # Apply the transformation
         self.apply_transformation(tm)
@@ -260,64 +279,180 @@ class STL_renderer:
             bpy.data.fonts.remove(font, do_unlink=True)
 
 
-import torch
-import numpy as np
-from pytorch3d.io import load_objs_as_meshes
-from pytorch3d.renderer import (
-    FoVPerspectiveCameras,
-    PointLights,
-    RasterizationSettings,
-    MeshRenderer,
-    MeshRasterizer,
-    SoftSilhouetteShader,
-    TexturesVertex
-)
+class STLViewer:
 
-
-class PyTorch3DRenderer:
-    def __init__(self, intrinsics, width, height):
-        self.intrinsics = intrinsics
+    def __init__(self, intrinsic, width, height, stl, queue, return_queue):
         self.width = width
         self.height = height
-        self.mesh = None
+        self.intrinsics = intrinsic
+        self.display = (width, height)
+        self.vertices = None
+        self.normals = None
+        self.vertices_base = None
+        self.normals_base = None
+        self.screen = None
+        self.opengl_lock = threading.Lock()
 
-        # Compute camera properties
-        fov_y = 2 * np.arctan(self.height / (2 * self.intrinsics['fy'])) * (180 / np.pi)
-        fov_x = intrinsics['projector_fovx']
+        self.load_stl(stl)
 
-        # Create a camera
-        self.camera = FoVPerspectiveCameras(
-            fov=(fov_y, fov_x),
-            aspect_ratio=float(width) / float(height),
-            device=torch.device("cuda:0")
+        self.queue = queue
+        self.return_queue = return_queue
+
+        self.screen = self.setup_camera()
+        self.setup_lighting()
+        #self.mainloop()
+
+    def setup_camera(self):
+        # Initialize Pygame
+        pygame.init()
+        size = (self.width, self.height)
+        screen = pygame.display.set_mode(size, pygame.DOUBLEBUF | pygame.OPENGL)
+
+        # Initialize OpenGL
+        gl.glViewport(0, 0, size[0], size[1])
+        gl.glMatrixMode(gl.GL_PROJECTION)
+        gl.glLoadIdentity()
+        glu.gluPerspective(self.intrinsics['projector_fovy'], float(size[0]) / float(size[1]), 0.1, 10000.0)
+
+        # Set up Pygame/OpenGL camera parameters to match intrinsics
+        sensor_fit = 'HORIZONTAL'
+        projector_fovx = self.intrinsics['projector_fovx']
+        projector_fovy = self.intrinsics['projector_fovy']
+        aspect_ratio = math.tan(math.radians(projector_fovx) / 2) / math.tan(math.radians(projector_fovy) / 2)
+        sensor_width = 2 * self.intrinsics['fx'] * math.tan(math.radians(projector_fovx) / 2)
+        sensor_height = sensor_width / aspect_ratio
+
+        focal_length_mm = (self.intrinsics['fx'] * sensor_width) / size[0]
+        shift_x = (self.intrinsics['cx'] - size[0] / 2) / size[0]
+        shift_y = (self.intrinsics['cy'] - size[1] / 2) / size[1]
+
+        # Position and orient the camera
+        camera_pos = (0, 0, 0)
+        camera_up = (0, -1, 0)
+        camera_look = (0, 0, 1)
+        glu.gluLookAt(
+            camera_pos[0], camera_pos[1], camera_pos[2],
+            camera_look[0], camera_look[1], camera_look[2],
+            camera_up[0], camera_up[1], camera_up[2],
         )
 
-        # Create a point light
-        self.lights = PointLights(location=[[0.0, 0.0, 0.0]], device=torch.device("cuda:0"))
+        # Add a light behind the camera
+        gl.glLightfv(gl.GL_LIGHT0, gl.GL_POSITION, [0, 0, -1, 0])
+        gl.glEnable(gl.GL_LIGHT0)
 
-        # Create a renderer
-        raster_settings = RasterizationSettings(image_size=self.width)
-        self.renderer = MeshRenderer(
-            rasterizer=MeshRasterizer(cameras=self.camera, raster_settings=raster_settings),
-            shader=SoftSilhouetteShader()
-        )
+        # Enable depth testing
+        #gl.glEnable(gl.GL_DEPTH_TEST)
 
-    def load_mesh(self, stl_file):
-        return load_objs_as_meshes([stl_file], device=torch.device("cuda:0"))
+        return screen
 
-    def render_mesh(self, tm):
-        # Convert transformation matrix to rotation and translation matrices
-        R, T = tm[:3, :3], tm[:3, 3]
+    def setup_lighting(self):
+        # Set up a directional light behind the camera
+        light_ambient = [0.2, 0.2, 0.2, 1.0]
+        light_diffuse = [1.0, 1.0, 1.0, 1.0]
+        light_specular = [1.0, 1.0, 1.0, 1.0]
+        light_position = [0.0, 0.0, -1.0, 0.0]
+        gl.glLightfv(gl.GL_LIGHT0, gl.GL_AMBIENT, light_ambient)
+        gl.glLightfv(gl.GL_LIGHT0, gl.GL_DIFFUSE, light_diffuse)
+        gl.glLightfv(gl.GL_LIGHT0, gl.GL_SPECULAR, light_specular)
+        gl.glLightfv(gl.GL_LIGHT0, gl.GL_POSITION, light_position)
+        gl.glEnable(gl.GL_LIGHT0)
 
-        # Render the mesh
-        self.camera.R = torch.tensor(R, dtype=torch.float32, device=torch.device("cuda:0")).unsqueeze(0)
-        self.camera.T = torch.tensor(T, dtype=torch.float32, device=torch.device("cuda:0")).unsqueeze(0)
-        images = self.renderer(self.mesh, cameras=self.camera, lights=self.lights)
-        binary_mask = images[..., 3].detach().cpu().numpy()
+        # Set up material properties
+        mat_ambient = [0.2, 0.2, 0.2, 1.0]
+        mat_diffuse = [0.8, 0.8, 0.8, 1.0]
+        mat_specular = [1.0, 1.0, 1.0, 1.0]
+        mat_shininess = 0.0
+        gl.glMaterialfv(gl.GL_FRONT, gl.GL_AMBIENT, mat_ambient)
+        gl.glMaterialfv(gl.GL_FRONT, gl.GL_DIFFUSE, mat_diffuse)
+        gl.glMaterialfv(gl.GL_FRONT, gl.GL_SPECULAR, mat_specular)
+        gl.glMaterialf(gl.GL_FRONT, gl.GL_SHININESS, mat_shininess)
 
-        return binary_mask
+        # Enable lighting and depth testing
+        gl.glEnable(gl.GL_LIGHTING)
+        gl.glEnable(gl.GL_DEPTH_TEST)
 
-    def render(self, stl_file, tm):
-        self.mesh = self.load_mesh(stl_file)
-        binary_mask = self.render_mesh(tm)
-        return binary_mask
+        # Set the shading model to smooth
+        gl.glShadeModel(gl.GL_SMOOTH)
+
+    def load_stl(self, filename):
+        mesh = stl.mesh.Mesh.from_file(filename)
+        self.vertices = mesh.vectors.reshape(-1, 3)
+        self.normals = mesh.normals.reshape(-1, 1)
+
+        self.normals_base = deepcopy(self.normals)
+        self.vertices_base = deepcopy(self.vertices)
+
+    def mainloop(self):
+        running = True
+        while running:
+            # Handle events
+            if not self.queue.empty():
+                message = self.queue.get()
+            else:
+                message = None
+
+            # for event in pygame.event.get():
+            #     if event.type == pygame.QUIT:
+            #         pygame.quit()
+            #         quit()
+
+            if message is not None:
+                if message["type"] == "exit":
+                    pygame.quit()
+                    running = False
+                    continue
+                    #quit()
+                if message["type"] == "render":
+                    #print("message received")
+                    self.apply_transform_iter(*message["args"])
+                    #print("message processed")
+
+            # Clear the screen and depth buffer
+            gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
+                # Draw the STL mesh
+            if self.vertices is not None and self.normals is not None:
+                gl.glEnableClientState(gl.GL_VERTEX_ARRAY)
+                gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
+                vertex_array = (gl.GLfloat * self.vertices.flatten().size)(*self.vertices.flatten())
+
+
+                gl.glVertexPointer(3, gl.GL_FLOAT, 0, vertex_array)
+                gl.glDrawArrays(gl.GL_TRIANGLES, 0, len(self.vertices))
+            # Swap buffers
+            pygame.display.flip()
+            # limit to 60 fps using pygame
+            pygame.time.wait(16)
+
+            if message is not None:
+                #print("processing message")
+                if message["type"] == "render":
+                    image = self.render_object()
+                    #print("sending image")
+                    self.return_queue.put(image)
+                    #print("image sent")
+
+    def apply_transformation(self, matrix):
+        gl.glMatrixMode(gl.GL_MODELVIEW)
+        gl.glLoadIdentity()
+
+        # Apply the transformation to the vertices
+        homogeneous_vertices = np.hstack((self.vertices_base, np.ones((self.vertices.shape[0], 1))))
+        transformed_vertices = np.dot(matrix , homogeneous_vertices.T).T
+        transformed_vertices = transformed_vertices[:, :3] / transformed_vertices[:, 3][:, np.newaxis]
+        self.vertices = transformed_vertices.astype(np.float32)
+
+    def render_object(self):
+        # get the image from the buffer
+        buffer = gl.glReadPixels(0, 0, self.width, self.height, gl.GL_RGB, gl.GL_UNSIGNED_BYTE)
+        image = Image.frombytes(mode="RGB", size=(self.width, self.height), data=buffer)
+        image = np.array(image)
+        image = np.flipud(image)
+
+        return image
+
+    def apply_transform_iter(self, *args):
+        tm = utils.compose_matrix(*args)
+        tm = np.array(tm)
+        # Apply the transformation
+        print(tm)
+        self.apply_transformation(tm)

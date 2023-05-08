@@ -79,12 +79,12 @@ if __name__ == '__main__':
                                                                channels=channels)
     mean, std = stats
     mean, std = mean[channels], std[channels]
-
-    model = MaskRCNN(5, 6, mean, std)
+    cats = train_dataloader.dataset.dataset.coco.cats
+    model = MaskRCNN(5, len(cats), mean, std)
     # model.cuda()
     model.eval()
 
-    checkpoint = torch.load("RCNN_Unscaled_19.pth")
+    checkpoint = torch.load("RCNN_Unscaled_4.pth")
     model.load_state_dict(checkpoint['model_state_dict'])
 
     images, targets = next(iter(val_dataloader))

@@ -26,7 +26,7 @@ class CustomCocoDetection(CocoDetection):
         path = self.coco.loadImgs(id)[0]["file_name"]
         # print("Path: ", path, " ")
         # print("Path: ", path, " ")
-        npz_file = np.load(os.path.join(self.root, path))
+        npz_file = np.load(os.path.join(self.root, path.replace("/", os.sep)))
         # way to get the keys of the npz file, and load them as a list in the same order
         img_arrays = [npz_file[key] for key in npz_file.keys()]
         # dstack with numpy because pytorch refuses to stack different number of channels reasons
@@ -129,11 +129,9 @@ def prepare_targets(targets) -> list:
     return prepared_targets
 
 
-
 def collate_fn_rcnn(batch, channels=None):
     """Custom collate function to prepare data for the model"""
     images, targets = zip(*batch)
-
     # Stack images on first dimension to get a tensor of shape (batch_size, C, H, W)
     batched_images = torch.stack(images, dim=0).permute(0, 3, 1, 2)
     # Select channels to use
@@ -165,7 +163,7 @@ class CollateWrapper:
 
 
 def createDataLoader(path, bs=1, shuffle=True, num_workers=6, channels: list = None, split=0.9,
-                     dataset_creation=False,anoname='merged.json'):
+                     dataset_creation=False, anoname='merged.json'):
     ano_path = (path.joinpath('annotations', anoname))
 
     collate = CollateWrapper(channels)
@@ -177,9 +175,11 @@ def createDataLoader(path, bs=1, shuffle=True, num_workers=6, channels: list = N
                             collate_fn=collate)
         return loader, (dataset.mean, dataset.std)
     else:
+        # dataset = Subset(dataset, range(0, 100))
         # Calculate the lengths of the train and validation sets
         train_len = int(len(dataset) * split)
         val_len = len(dataset) - train_len
+
 
         # Create the train and validation subsets
         train_set, val_set = random_split(dataset,
@@ -196,5 +196,5 @@ def createDataLoader(path, bs=1, shuffle=True, num_workers=6, channels: list = N
         # shuffle=False for validation set to get the same results every time
         val_dataloader = DataLoader(val_set, batch_size=bs, shuffle=False, num_workers=num_workers,
                                     collate_fn=collate)
-
+    # dataset =dataset.dataset
     return train_dataloader, val_dataloader, (dataset.mean, dataset.std)
