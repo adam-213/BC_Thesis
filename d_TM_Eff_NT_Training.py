@@ -13,6 +13,7 @@ import random
 import numpy as np
 import seaborn as sns
 from d_Dataloader_TM_CNN_NT import createDataLoader
+from d_Dataloader_Synth import createDataLoader as synth
 from d_TM_Eff_NT import PoseEstimationModel
 
 
@@ -37,42 +38,43 @@ class Trainer:
             self.optimizer.zero_grad()
             images_stacked_masked = images_stacked_masked.to(self.device)
             z_vecs = z_vecs.to(self.device)
-            XYZs = XYZs.to(self.device)
-            zs = zs.to(self.device)
+            # XYZs = XYZs.to(self.device)
+            # zs = zs.to(self.device)
 
             # Mixed precision training for speeeeed
             with autocast():
                 weights = self.model(images_stacked_masked, XYZs)
                 if weights is None:
-                    print("None weights", images_stacked_masked.shape, XYZs.shape)
+                    print("None weights", images_stacked_masked.shape, XYZs)
                     continue
                 loss = self.model.loss_W(weights, z_vecs, zs,
                                          False,
                                          images_stacked_masked, XYZs, [batch, epoch])
 
-                # Scale the gradients
-                try:
-                    self.scaler.scale(loss).backward()
-                except Exception as e:
-                    print("Error in scaling gradients, skipping batch", e)
-                    continue
-                # Update the optimizer with the combined gradients
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-                self.scheduler.step_cosine_annealing()
+            # Scale the gradients
+            # try:
+            #     self.scaler.scale(loss).backward()
+            # except Exception as e:
+            #     print("Error in scaling gradients, skipping batch", e)
+            #     continue
+            # Update the optimizer with the combined gradients
+            self.scaler.scale(loss).backward()
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            self.scheduler.step_cosine_annealing()
 
-                # self.scheduler.step()
+            # self.scheduler.step()
 
-                # loss.backward()
-                # self.optimizer.step()
-                #
-                # self.scheduler.step()
-                loss = loss.item()
+            # loss.backward()
+            # self.optimizer.step()
+            #
+            # self.scheduler.step()
+            loss = loss.item()
 
-                total_loss_list.append(loss)
+            total_loss_list.append(loss)
 
-                print(f"Epoch {epoch} Batch {batch} Loss: {loss} Time: {time.time() - t if t else time.time()}")
-                t = time.time()
+            print(f"Epoch {epoch} Batch {batch} Loss: {loss} Time: {time.time() - t if t else time.time()}")
+            t = time.time()
         return total_loss_list
 
     def val_one_epoch_stage_2(self, epoch):
@@ -88,8 +90,8 @@ class Trainer:
                 self.optimizer.zero_grad()
                 images_stacked_masked = images_stacked_masked.to(self.device)
                 z_vecs = z_vecs.to(self.device)
-                XYZs = XYZs.to(self.device)
-                zs = zs.to(self.device)
+                # XYZs = XYZs.to(self.device)
+                # zs = zs.to(self.device)
                 plot = True if batch == self.plotbatch else False
                 # Mixed precision training for speeeeed
                 with autocast():
@@ -165,13 +167,13 @@ class Trainer:
         ax.set_title(f"Stage {stage} Epoch {epoch} Losses")
         ax.set_xlabel("Batch")
         ax.set_ylabel("Loss")
-        sns.regplot(x=np.arange(len(train_losses)), y=train_losses, ax=ax, label="Train RegLine", color='blue',
-                    scatter=False, order=4)
-        # choose a color for the validation loss curve based on the epoch number
-        sns.regplot(x=val_loss_x, y=val_losses, ax=ax, label="Validation RegLine", color="orange", scatter=False,
-                    order=4)
+        # sns.regplot(x=np.arange(len(train_losses)), y=train_losses, ax=ax, label="Train RegLine", color='blue',
+        #             scatter=False, order=4)
+        # # choose a color for the validation loss curve based on the epoch number
+        # sns.regplot(x=val_loss_x, y=val_losses, ax=ax, label="Validation RegLine", color="orange", scatter=False,
+        #             order=4)
         ax.legend()
-        plt.savefig(f"deit3_epoch{epoch}.png")
+        plt.savefig(f"samples/deit3_epoch{epoch}.png")
         plt.close()
 
     def load_checkpoint(self, path):
@@ -192,6 +194,10 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
 class IntegratedCosineAnnealingReduceOnPlateau:
     def __init__(self, optimizer, T_max, eta_min=0.0, last_epoch=-1, factor=0.1, patience=2, verbose=False,
                  threshold=5e-4, cooldown=0, min_lr=0, eps=1e-8):
+        self.T_max = T_max
+        self.eta_min = eta_min
+        self.factor = factor
+        self.optimizer = optimizer
         self.cosine_annealing = CosineAnnealingLR(optimizer, T_max, eta_min, last_epoch)
         self.reduce_on_plateau = ReduceLROnPlateau(optimizer, mode='min', factor=factor, patience=patience,
                                                    verbose=verbose, threshold=threshold, cooldown=cooldown,
@@ -202,6 +208,13 @@ class IntegratedCosineAnnealingReduceOnPlateau:
 
     def step_reduce_on_plateau(self, metrics):
         self.reduce_on_plateau.step(metrics)
+        if any([group['lr'] < group['initial_lr'] for group in self.optimizer.param_groups]):
+            self.adjust_cosine_annealing()
+
+    def adjust_cosine_annealing(self):
+        self.T_max *= self.factor
+        self.eta_min *= self.factor
+        self.cosine_annealing = CosineAnnealingLR(self.optimizer, self.T_max, self.eta_min)
 
     def get_lr(self):
         return self.cosine_annealing.get_lr()
@@ -220,23 +233,25 @@ class IntegratedCosineAnnealingReduceOnPlateau:
 def s2_train():
     # Modify these lines to use your custom dataloader
     base_path = pathlib.Path(__file__).parent.absolute()
-    coco_path = base_path.joinpath('COCOFULL_Dataset')
+    coco_path = base_path.joinpath('CCO_TE')
     channels = [0, 1, 2, 5, 9]
     gray = True
 
-    train_dataloader, val_dataloader = createDataLoader(coco_path, batchsize=3, channels=channels, num_workers=0,
-                                                        shuffle=True, gray=gray)
+    # train_dataloader, val_dataloader = createDataLoader(coco_path, batchsize=3, channels=channels, num_workers=8,
+    #                                                     shuffle=True, gray=gray)
+
+    train_dataloader, val_dataloader,vals = synth(coco_path, bs=3, channels=channels, num_workers=10 )
 
     # model = PoseEstimationModel(len(channels) - 2 if gray else len(channels))
     model = PoseEstimationModel(len(channels) - 2 if gray else len(channels))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
-    num_epochs = 50
+    num_epochs = 35
     scaler = GradScaler()
 
     # Set the base and max learning rates
-    base_lr = 0.0005
+    base_lr = 0.001
 
     optimizer = torch.optim.RAdam(model.parameters(), lr=base_lr, weight_decay=0.0001, eps=1e-8)
 
@@ -263,8 +278,7 @@ def s2_train():
 
 
 if __name__ == '__main__':
-    # s1_train()
-    #time.sleep(21600 + 3600)
+    # time.sleep(3600*5)
     s2_train()
 
     # inference()

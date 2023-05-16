@@ -9,6 +9,9 @@ from PIL import Image
 from scipy import ndimage
 from scipy.spatial.transform import Rotation
 import matplotlib.pyplot as plt
+import os
+import sys
+from contextlib import contextmanager
 
 
 def D2FP16(depth):
@@ -82,7 +85,7 @@ def merge(*args):
 
 def save_NPZ(arr_dict, save_path, index):
     # # todo save as lz4 npy
-    np.savez_compressed(str(save_path.joinpath(f'{index}.npy')), **arr_dict)
+    np.savez_compressed(str(save_path.joinpath(f'{index}.npz')), **arr_dict)
 
 
 # def scale(arr):
@@ -92,23 +95,10 @@ def save_NPZ(arr_dict, save_path, index):
 #
 #     return arr
 
-
-def render(path, T):
+def setup_rendering():
     bpy.ops.wm.read_factory_settings(use_empty=True)
-    # Load the STL file
-    bpy.ops.import_mesh.stl(filepath=path)
-
-    # Get a reference to the imported object
-    obj = bpy.context.selected_objects[0]
-
-    # Convert the transformation matrix to a list of python floats
-    T = T.reshape((4, 4), order='F')
-
-    # Apply the transformation matrix to the object
-    obj.matrix_world @= mathutils.Matrix(T)
-
     material = bpy.data.materials.new(name='Material')
-    obj.active_material = material
+
 
     # Set up the camera with the given parameters
     camera = bpy.data.cameras.new('Camera')
@@ -150,67 +140,83 @@ def render(path, T):
     bpy.context.scene.render.simplify_subdivision_render = 1
 
     # save the image to the buffer
-    file = f'E:\\dummy{random.randint(10000, 12312312312)}.png'
-    bpy.context.scene.render.filepath = file
+
     bpy.context.scene.render.image_settings.file_format = 'PNG'
+
+
+def render(path, T):
+    # Load the STL file
+    bpy.ops.import_mesh.stl(filepath=path)
+
+    # Get a reference to the imported object
+    obj = bpy.context.selected_objects[0]
+    # get the material
+    material = bpy.data.materials['Material']
+    obj.active_material = material
+
+    # Convert the transformation matrix to a list of python floats
+    T = T.reshape((4, 4), order='F')
+
+    # Apply the transformation matrix to the object
+    obj.matrix_world @= mathutils.Matrix(T)
+
+    file = f'E:\\temp.png'
+    bpy.context.scene.render.filepath = file
     bpy.ops.render.render(
         use_viewport=True,
         write_still=True,
         scene=bpy.context.scene.name,
     )
+
+    # remove the object
+    bpy.data.objects.remove(obj, do_unlink=True)
     # Load the rendered image from the memory buffer and get the pixel data
     image = np.array(Image.open(file))
 
-    delete(bpy.context.scene)
+    # delete(bpy.context.scene)
 
     # remove the temp file
     os.remove(file)
     return image
 
 
-def delete(scene):
-    """Something from this helps with memory leaks, but I'm not sure what"""
-    # Loop through all objects in the scene and delete them
-    for obj in scene.objects:
-        bpy.data.objects.remove(obj, do_unlink=True)
 
-    # Delete all materials
-    for mat in bpy.data.materials:
-        bpy.data.materials.remove(mat, do_unlink=True)
+@contextmanager
+def stdout_redirected(to=os.devnull):
+    # a workaround for the fact that blender is more verbose than your mom when they meet an old friend
+    '''
+    import os
 
-    # Delete all textures
-    for tex in bpy.data.textures:
-        bpy.data.textures.remove(tex, do_unlink=True)
+    with stdout_redirected(to=filename):
+        print("from Python")
+        os.system("echo non-Python applications are also supported")
+    '''
+    fd = sys.stdout.fileno()
 
-    # Delete all images
-    for img in bpy.data.images:
-        bpy.data.images.remove(img, do_unlink=True)
+    ##### assert that Python and C stdio write using the same file descriptor
+    ####assert libc.fileno(ctypes.c_void_p.in_dll(libc, "stdout")) == fd == 1
 
-    # Delete all meshes
-    for mesh in bpy.data.meshes:
-        bpy.data.meshes.remove(mesh, do_unlink=True)
+    def _redirect_stdout(to):
+        sys.stdout.close()  # + implicit flush()
+        os.dup2(to.fileno(), fd)  # fd writes to 'to' file
+        sys.stdout = os.fdopen(fd, 'w')  # Python writes to fd
 
-    # Delete all armatures
-    for arm in bpy.data.armatures:
-        bpy.data.armatures.remove(arm, do_unlink=True)
+    with os.fdopen(os.dup(fd), 'w') as old_stdout:
+        with open(to, 'w') as file:
+            _redirect_stdout(to=file)
+        try:
+            yield  # allow code to be run with the redirected stdout
+        finally:
+            _redirect_stdout(to=old_stdout)  # restore stdout.
+            # buffering and flags such as
+            # CLOEXEC may be different
 
-    # Delete all actions
-    for action in bpy.data.actions:
-        bpy.data.actions.remove(action, do_unlink=True)
-
-    # Delete all curves
-    for curve in bpy.data.curves:
-        bpy.data.curves.remove(curve, do_unlink=True)
-
-    # Delete all fonts
-    for font in bpy.data.fonts:
-        bpy.data.fonts.remove(font, do_unlink=True)
-
+import time
 
 def is_mask_good(mask, image, category, stls, T, occlusion=0.15):
     # i cant believe this works finally
-
-    obj = render(stls[category], T)
+    with stdout_redirected():
+        obj = render(stls[category], T)
 
     # threshold the object to a binary mask
     render_mask = obj[:, :, 3] > 0
@@ -223,7 +229,7 @@ def is_mask_good(mask, image, category, stls, T, occlusion=0.15):
 
     # # ### DEBUGGING ###
     # plot the masks for debugging
-    #fig, ax = plt.subplots(figsize=(10, 10))
+    # fig, ax = plt.subplots(figsize=(10, 10))
     # draw mask in red channel
     # draw render mask in green channel
 

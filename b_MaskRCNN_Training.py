@@ -183,10 +183,10 @@ class Trainer:
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
+        self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])  # load scheduler state_dict
         epoch = checkpoint['epoch']
         train_losses = checkpoint['train_losses']
         val_losses = checkpoint['val_losses']
-        # val_loss_dict = checkpoint['val_loss_dict']
         return train_losses, val_losses, epoch
 
 
@@ -196,6 +196,10 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
 class IntegratedCosineAnnealingReduceOnPlateau:
     def __init__(self, optimizer, T_max, eta_min=0.0, last_epoch=-1, factor=0.1, patience=2, verbose=True,
                  threshold=5e-4, cooldown=0, min_lr=0, eps=1e-8):
+        self.optimizer = optimizer
+        self.T_max = T_max
+        self.eta_min = eta_min
+        self.last_epoch = last_epoch
         self.cosine_annealing = CosineAnnealingLR(optimizer, T_max, eta_min, last_epoch)
         self.reduce_on_plateau = ReduceLROnPlateau(optimizer, mode='min', factor=factor, patience=patience,
                                                    verbose=verbose, threshold=threshold, cooldown=cooldown,
@@ -210,20 +214,32 @@ class IntegratedCosineAnnealingReduceOnPlateau:
     def get_lr(self):
         return self.cosine_annealing.get_lr()
 
+    def reset_cosine_annealing(self, T_max=None, eta_min=None, last_epoch=None):
+        T_max = T_max if T_max is not None else self.T_max
+        eta_min = eta_min if eta_min is not None else min(self.get_lr())
+        last_epoch = last_epoch if last_epoch is not None else self.last_epoch
+        self.cosine_annealing = CosineAnnealingLR(self.optimizer, T_max, eta_min, last_epoch)
+
     def state_dict(self):
         return {
             'cosine_annealing': self.cosine_annealing.state_dict(),
-            'reduce_on_plateau': self.reduce_on_plateau.state_dict()
+            'reduce_on_plateau': self.reduce_on_plateau.state_dict(),
+            'T_max': self.T_max,
+            'eta_min': self.eta_min,
+            'last_epoch': self.last_epoch
         }
 
     def load_state_dict(self, state_dict):
         self.cosine_annealing.load_state_dict(state_dict['cosine_annealing'])
         self.reduce_on_plateau.load_state_dict(state_dict['reduce_on_plateau'])
+        self.T_max = state_dict['T_max']
+        self.eta_min = state_dict['eta_min']
+        self.last_epoch = state_dict['last_epoch']
 
 
 def main():
     base_path = pathlib.Path(__file__).parent.absolute()
-    coco_path = base_path.joinpath('COCOFULL_Dataset')
+    coco_path = base_path.joinpath('COCO_Big')
     channels = [0, 1, 2, 5, 9]
 
     train_dataloader, val_dataloader, stats = createDataLoader(coco_path, bs=3, num_workers=8,
@@ -243,13 +259,12 @@ def main():
     batches_per_cycle = 750
     num_epochs = 35
     T_max = batches_per_cycle
-    eta_min = 5e-7
+    eta_min = 1e-5
     scheduler = IntegratedCosineAnnealingReduceOnPlateau(optimizer, T_max, eta_min, )
 
     trainer = Trainer(model, train_dataloader, val_dataloader, optimizer, device, scaler, scheduler)
-    # just so it runs basically forever, you can stop it whenever you want - checkpoints are saved every epoch
     save_path = "RCNN_Unscaled_{}.pth"
-    trainer.train(num_epochs, save_path, load_checkpoint="RCNN_Unscaled_{}.pth".format(30))
+    trainer.train(num_epochs, save_path, load_checkpoint=None)
 
 
 if __name__ == '__main__':

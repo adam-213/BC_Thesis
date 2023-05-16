@@ -11,157 +11,90 @@ import numpy as np
 from stl import mesh
 import plotly.graph_objects as go
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-from torch.autograd import Variable
-import torch.optim as optim
-import logging
-import torch.nn as nn
-from scipy.optimize import minimize
-import queue
-import threading
-import time
+from stl import mesh
+from sklearn.neighbors import NearestNeighbors
 
 
-class Refiner:
-    def __init__(self, mask, init_tm, return_queue, input_queue, image):
-        self.gt_mask = mask
-        self.losses, self.tms = [], []
+class ICP_PoseRefinement:
 
-        self.input_queue = input_queue
-        self.return_queue = return_queue
+    def __init__(self, init_tm, stl_path, ptc, mask):
+        self.losses = []
+        self.object = None
+        self.tm = init_tm
+        self.stl_path = stl_path
+        self.ptc = ptc
+        self.mask = mask
 
-        self.depthmap = image[:, :, 3]
+    def prepare(self):
+        self.ptc = self.ptc * self.mask
+        # fit a crop to the point cloud for cropping the stl
+        crop = utils.fit_crop(self.ptc)
+        # crop the point cloud
+        self.ptc = utils.crop_ptc(self.ptc, crop)
+        # load the stl and convert to ply
+        self.object = self.stl2ply()
 
-        self.rot_scale, self.move_scale, self.combined = None, None, None
-        self.prepare_combined(init_tm)
+    def stl2ply(self):
+        # load stl
+        stl_mesh = mesh.Mesh.from_file(self.stl_path)
+        # convert to ply
+        plydata = mesh.Mesh(stl_mesh.data.copy())
 
-    def prepare_combined(self, init_tm):
-        self.gt_mask[self.gt_mask < 0.5] = 0
-        self.gt_mask[self.gt_mask >= 0.5] = 1
-        # rotvec is in axis angle
-        rot, move, scale = utils.decompose_matrix(init_tm)
+        return plydata
 
-        # both vectors need to be normalized for the optimizer, however scales need to be saved to rescale for the renderer
-        self.rot_scale = np.linalg.norm(rot)
-        self.move_scale = np.linalg.norm(move)
-        # normalize the vectors
-        rotvec = rot / self.rot_scale
-        movevec = move / self.move_scale
-        # combine the vectors for the optimizer
-        self.combined = torch.from_numpy(
-            np.array(
-                [rotvec[0], rotvec[1], rotvec[2],
-                 movevec[0], movevec[1], movevec[2]])).float()
+    def run(self):
+        self.prepare()
+        self.icp()
 
-    def calculate_iou_loss(self, mask):
-        intersection = np.logical_and(self.gt_mask, mask)
-        union = np.logical_or(self.gt_mask, mask)
+    def icp(self):
+        # Set up initial parameters
+        max_iterations = 50
+        threshold = 1e-5
+        prev_error = 0
 
-        # Compute the area of intersection and union
-        intersection_area = np.sum(intersection)
-        union_area = np.sum(union)
+        # Iterate until convergence or max_iterations reached
+        for _ in range(max_iterations):
+            # Find nearest neighbors between point cloud and object mesh
+            neigh = NearestNeighbors(n_neighbors=1, algorithm='auto').fit(self.object.points)
+            distances, indices = neigh.kneighbors(self.ptc)
 
-        # Compute the Mask IoU
-        iou = intersection_area / float(union_area)
+            # Compute the mean error
+            error = np.mean(distances)
+            self.losses.append(error)
 
-        return 1 - iou
+            # Check for convergence
+            if np.abs(prev_error - error) < threshold:
+                break
 
-    def calculate_depth_loss(self, mask):
-        # mask the depthmap with the mask
-        masked_depthmap = self.depthmap * mask
-        # exlude the 0 values
-        masked_depthmap = masked_depthmap[masked_depthmap != 0]
+            prev_error = error
 
-        # calculate the mean of the depthmap
-        mean_depth = np.mean(masked_depthmap)
-        # calculate mse between mean and the predicted depth
-        depth = self.combined[5]
-        return abs(depth - mean_depth)
+            # Compute centroids
+            centroid_ptc = np.mean(self.ptc, axis=0)
+            centroid_obj = np.mean(self.object.points[indices], axis=0)
 
-    def calculate_loss(self, weights):  # render the new mask and calculate the loss
-        message = {'type': "render", "args": [weights, self.rot_scale, self.move_scale]}
-        self.input_queue.put(message)
-        #print("Waiting for render...")
-        while self.return_queue.empty():
-            # print("Waiting for render...")
-            time.sleep(0.01)
-        new_mask = self.return_queue.get()
-        #print("Got render")
+            # Move point clouds to origin
+            ptc_centered = self.ptc - centroid_ptc
+            obj_centered = self.object.points[indices].reshape(-1, 3) - centroid_obj
 
-        # turn the mask into bw
-        new_mask = cv2.cvtColor(new_mask, cv2.COLOR_BGR2GRAY)
-        new_mask[new_mask < 20] = 0
-        new_mask[new_mask >= 20] = 1
+            # Compute rotation matrix
+            H = np.dot(ptc_centered.T, obj_centered)
+            U, _, Vt = np.linalg.svd(H)
+            R = np.dot(Vt.T, U.T)
 
-        loss_iou = self.calculate_iou_loss(new_mask)
-        loss_depth = self.calculate_depth_loss(new_mask)
+            # Compute translation vector
+            t = centroid_obj - np.dot(centroid_ptc, R)
 
-        print("Loss iou: ", loss_iou)
-        print("Loss depth: ", loss_depth)
+            # Update the transformation matrix
+            self.tm[:3, :3] = np.dot(R, self.tm[:3, :3])
+            self.tm[:3, 3] += t
 
-        # calculate the total loss
-        loss =  loss_iou #* 15 + loss_depth  # this needs to be weighted because depth loss is unbounded and iou is bounded between 0 and 1
-
-        #print(loss.item())
-        return loss
-
-    def optimize(self, iters=100):
-        print("Optimizing...")
-        time.sleep(1)
-
-        def wrapper(weights):
-            print(weights)
-            return self.calculate_loss(weights)
-
-        # Convert the initial combined tensor to a NumPy array
-        x0 = self.combined.numpy()
-
-        # Perform the optimization using the Nelder-Mead algorithm
-        res = minimize(wrapper, x0, method='Nelder-Mead',
-                       options={'maxiter': iters, 'disp': True, 'xatol': 1e-3, 'fatol': 1e-4,
-                                'adaptive': True})
-
-        # Update the combined tensor with the optimized weights
-        self.combined = torch.tensor(res.x, dtype=torch.float32)
-
-        tm = utils.compose_matrix(self.combined, self.rot_scale, self.move_scale)
-        self.result_tm = tm
-        self.input_queue.put({'type': "exit", "args": []})
-        return tm
+            # Apply transformation
+            self.ptc = np.dot(self.ptc, R.T) + t
 
 
 def plot_loss(self):
     plt.plot(self.losses)
     plt.show()
-
-
-def calculate_matrix(zvec, translation):
-    # Normalize the Z vector
-    z = np.array(zvec) / np.linalg.norm(zvec)
-
-    # Choose an arbitrary vector not parallel to the Z vector
-    if np.allclose(z, np.array([0, 1, 0])):
-        arbitrary_vector = np.array([1, 0, 0])
-    else:
-        arbitrary_vector = np.array([0, 1, 0])
-
-    # Calculate the X vector
-    x = np.cross(arbitrary_vector, z)
-    x = x / np.linalg.norm(x)
-
-    # Calculate the Y vector
-    y = np.cross(z, x)
-
-    # Construct the rotation matrix
-    rotation_matrix = np.array([x, y, z]).T
-
-    # Construct the full transformation matrix
-    transformation_matrix = np.identity(4)
-    transformation_matrix[:3, :3] = rotation_matrix
-    transformation_matrix[:3, 3] = translation
-
-    return transformation_matrix
 
 
 def main():
@@ -170,25 +103,9 @@ def main():
     stl_path = base_path.joinpath('STL')
 
     # get the data from the networks - using traning data for now
-    z_vec, world_centroid, mask, label, image, ground_truth_matrix, INTRINSICS = utils.get_prediction()
+    z_vec, world_centroid, mask, label, image, ground_truth_matrix, ptc, INTRINSICS = utils.get_prediction()
 
-    init_tm = calculate_matrix(z_vec, world_centroid)
-
-    # init_tm[2, 3] += 5  # add an offset to the z axis because of the how i acquire the z from the data
-
-    input_queue, return_queue = queue.Queue(), queue.Queue()
-
-    refiner = Refiner(mask, init_tm, return_queue, input_queue, image)
-    refiner_thread = threading.Thread(target=refiner.optimize)
-    refiner_thread.start()
-
-    viewer = STLViewer(utils.INTRINSICS, 1032, 772, stl_path.joinpath(f'{label}.stl'), input_queue, return_queue)
-
-    viewer.apply_transformation(init_tm)
-    viewer.mainloop()
-
-    refiner_thread.join()
-    pose = refiner.result_tm
+    init_tm = utils.calculate_matrix(z_vec, world_centroid)
 
     return pose, init_tm, ground_truth_matrix, stl_path.joinpath(f'{label}.stl')
 

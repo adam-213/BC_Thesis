@@ -85,8 +85,8 @@ def prepare_targets(targets) -> list:
         inst_transforms = [torch.tensor(inst['transform']) for inst in target]
         # turn them into np arrays
         inst_transforms = [np.array(inst_transform) for inst_transform in inst_transforms]
-        #inst_transforms = [i.reshape((4, 4), order='F') for i in inst_transforms]
-        inst_transforms = [torch.from_numpy(inst_transform) for inst_transform in inst_transforms]
+        # inst_transforms = [i.reshape((4, 4), order='F') for i in inst_transforms]
+        inst_transforms = [torch.from_numpy(inst_transform.flatten()) for inst_transform in inst_transforms]
         inst_transforms = torch.stack(inst_transforms, dim=0)
         inst_transforms = inst_transforms.type(torch.float32)
 
@@ -113,20 +113,66 @@ def prepare_targets(targets) -> list:
 
         prepared_targets.append(prepared_target)
 
-        # # plot the masks and bounding boxes using patches
-        # fig, ax = plt.subplots(1)
-        # #ax.imshow(image)
-        # for i in range(len(inst_masks)):
-        #     mask = inst_masks[i]
-        #     box = bbox[i]
-        #     rect = patches.Rectangle((box[0], box[1]), box[2] - box[0], box[3] - box[1], linewidth=1, edgecolor='r',
-        #                              facecolor='none')
-        #     ax.add_patch(rect)
-        #     ax.imshow(mask, alpha=0.5)
-        #     plt.show()
-
     # List of dictionaries - one dictionary per image
     return prepared_targets
+
+
+# Set up the camera intrinsic parameters
+intrinsics = {
+    'fx': 1181.077335,
+    'fy': 1181.077335,
+    'cx': 516.0,
+    'cy': 386.0
+}
+
+
+def world_to_image_coords(world_coords, intrinsics):
+    fx, fy, cx, cy = intrinsics['fx'], intrinsics['fy'], intrinsics['cx'], intrinsics['cy']
+    X, Y, Z = world_coords.numpy()
+    # Normalize the real-world coordinates
+    x = X / Z
+    y = Y / Z
+    # Apply the intrinsic parameters to convert to pixel coordinates
+    u = fx * x + cx
+    v = fy * y + cy
+    # Round to integer values
+    u, v = round(u), round(v)
+    return u, v
+
+import torch.nn.functional as F
+def image_stack(images, targets):
+    padding = (150, 150, 150, 150)
+    new_images, new_targets = [], []
+    for image, target in zip(images, targets):
+        new_image, new_target = [], []
+        target_masks = F.pad(target['masks'], padding, value=0)
+        target_images = F.pad(image, padding, value=0)
+        for inst in range(len(target['masks'])):
+            if target['labels'][inst] <= 2:
+                continue
+            centroid = world_to_image_coords(target['tm'][inst, [12, 13, 14]], intrinsics)
+            maskedimage = target_images * target_masks[inst, :, :]
+            # pad the image by 150 on each side
+            # crop to 224x224 on the centroid
+            # assert centroid[0] < 1032 and centroid[1] < 772
+            centroid = [centroid[0] + 150, centroid[1] + 150]
+
+            maskedimage = maskedimage[:, centroid[1] - 112:centroid[1] + 112, centroid[0] - 112:centroid[0] + 112]
+
+            new_image.append(torch.Tensor(maskedimage))
+            new_target.append(torch.Tensor(target['tm'][inst, [8, 9, 10]]))
+
+        if len(new_image) == 0 or len(new_target) == 0:
+            continue
+        new_targets.append(torch.stack(new_target))
+        new_images.append(torch.stack(new_image))
+    if len(new_images) == 0 or len(new_targets) == 0:
+        return None, None
+    # Stack images on first dimension to get a tensor of shape (batch_size, C, H, W)
+    batched_images = torch.cat(new_images, dim=0)
+    batched_targets = torch.cat(new_targets, dim=0)
+
+    return batched_images, batched_targets
 
 
 def collate_fn_rcnn(batch, channels=None, grad=True):
@@ -134,20 +180,31 @@ def collate_fn_rcnn(batch, channels=None, grad=True):
     images, targets = zip(*batch)
     # Stack images on first dimension to get a tensor of shape (batch_size, C, H, W)
     batched_images = torch.stack(images, dim=0).permute(0, 3, 1, 2)
+
+    prepared_targets = prepare_targets(targets)
+
+    batched_images, batched_targets = image_stack(batched_images, prepared_targets)
+    if batched_images is None or batched_targets is None:
+        return None, None, None, None
     # Select channels to use
     if channels:
         batched_images = batched_images[:, channels, :, :]
     # For some reason this needs to be under the channel selection
-    if grad:
-        batched_images.requires_grad_(True)  # RCNN needs gradients on input images
-
-    # Prepare targets
-    prepared_targets = prepare_targets(targets)
-    # "Heuristic" was applied in the preprocess step as there was much more data to work with
-
 
     # Return batch as a tuple
-    return batched_images, prepared_targets
+    # gray the rgb images
+    batched_images = torch.cat(
+        (batched_images[:, 0:1, :, :] * 0.2989 + batched_images[:, 1:2, :, :] * 0.5870 + batched_images[:, 2:3, :,
+                                                                                         :] * 0.1140,
+         batched_images[:, 3:, :, :]), dim=1)
+
+    cut = 75
+    # if variable batch size is too big for the GPU, cut it down
+    if batched_images.shape[0] > cut:
+        batched_images = batched_images[:cut]
+        batched_targets = batched_targets[:cut]
+
+    return batched_images, batched_targets, None, None
 
 
 from torch.utils.data import DataLoader, Subset, random_split
@@ -200,3 +257,22 @@ def createDataLoader(path, bs=1, shuffle=True, num_workers=6, channels: list = N
                                     collate_fn=collate)
     # dataset =dataset.dataset
     return train_dataloader, val_dataloader, (dataset.mean, dataset.std)
+
+
+def main():
+    # iterate over the dataloader to get idea what is slow
+    base_path = pathlib.Path(__file__).parent.absolute()
+    coco_path = base_path.joinpath('COCO_Big')
+    channels = [0, 1, 2, 5, 9]
+    train_dataloader, val_dataloader, _ = createDataLoader(coco_path,
+                                                           bs=3, shuffle=False, num_workers=0, channels=channels)
+
+    for i, (images, targets, _, _) in enumerate(train_dataloader):
+        print(i)
+        print(images.shape)
+        if i > 10:
+            return
+
+if __name__ == "__main__":
+    main()
+

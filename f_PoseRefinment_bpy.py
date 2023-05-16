@@ -27,7 +27,7 @@ from PIL import Image
 
 @contextmanager
 def stdout_redirected(to=os.devnull):
-    # a workaround for the fact that blender is more verbose than your mom when they meet an old friend
+    # blender shut_up-inator
     '''
     import os
 

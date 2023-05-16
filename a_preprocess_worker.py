@@ -39,8 +39,8 @@ class Preprocessor:
 
     def __init__(self):
         self.path = pathlib.Path(__file__).parent.absolute()
-        self.data_path = self.path.joinpath('CoCoFULL')
-        self.coco_path = self.path.joinpath('COCOFULL_Dataset')
+        self.data_path = self.path.joinpath('Raw_Big')
+        self.coco_path = self.path.joinpath('COCO_Big')
         self.save_path = self.coco_path.joinpath('train')
 
         if not self.save_path.exists():
@@ -190,18 +190,23 @@ class Preprocessor:
         self.categories.sort()
         print("Categories: ", self.categories)
 
+        # setup scene
+        setup_rendering()
         # load stls for the parts so we can compute occlusion
         stls = {}
         for item in ["cogwheel_normalized", "thruster_normalized", "cchannel_normalized", "double_normalized",
                      "halfcuboid_normalized", "halfthruster_normalized", "hanger_normalized", "lockinsert_normalized",
                      "squaredonut_normalized", "squaretube_normalized", "tube_normalized"]:
-            name = "part_" + item
+            name = "part_" + item + "_centered"
             stls[name] = f"stl/{name}.stl"
+
+
 
         results = []
         # for i, scan_path in enumerate(tqdm(np.array(self.scans)[list(np.random.randint(0, len(self.scans), 25))])):
         for i, scan_path in enumerate(tqdm(self.scans[start:])):
             i = i + start
+            results.append(self.process(scan_path, i, stls))
             if i == number + start:
                 res, means, stds = zip(*results)
                 # combine the results into one json
@@ -209,7 +214,6 @@ class Preprocessor:
                 print("categories: ", self.categories)
                 create_json(res, self.categories, self.coco_path, means, stds, f"_End_{start}_{number + start}")
                 return
-            results.append(self.process(scan_path, i, stls))
             if i % 50 == 0 and i != start:
                 res, means, stds = zip(*results)
 
@@ -218,9 +222,10 @@ class Preprocessor:
                 print("categories: ", self.categories)
                 create_json(res, self.categories, self.coco_path, means, stds, i)
 
+        res, means, stds = zip(*results)
         print('Creating json')
         print("categories: ", self.categories)
-        create_json(results, self.categories, self.coco_path, means, stds, "all")
+        create_json(res, self.categories, self.coco_path, means, stds, "all")
 
 
 
@@ -232,7 +237,9 @@ if __name__ == "__main__":
     parser.add_argument("--number", type=int, required=False, help="Number of scans to process", default=100)
 
     args = parser.parse_args()
+    start,stop = args.start,args.number
+    # start, stop = 0, 1
 
     preprocessor = Preprocessor()
     preprocessor.load_scan_paths()
-    preprocessor.worker(args.start, args.number)
+    preprocessor.worker(start, stop)

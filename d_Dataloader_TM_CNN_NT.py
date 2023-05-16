@@ -160,7 +160,9 @@ def prepare_transforms(target):
 
 def prepare_targets(targets) -> list:
     prepared_targets = []
-    for target in targets:
+    if isinstance(targets, torch.Tensor):
+        targets = targets.tolist()
+    for target in tuple(targets):
         if len(target) == 0:
             continue
         prepared_target = {}
@@ -176,10 +178,12 @@ def prepare_targets(targets) -> list:
         # labels need to be int64, such overkill
         prepared_target['labels'] = torch.tensor(inst_labels, dtype=torch.int64)
         prepared_target['names'] = np.array([np.array(inst['name']) for inst in target])
-        prepared_target['centroid'] = np.array([np.array(inst['centroid']) for inst in target])
+        prepared_target['image_centroid'] = np.array([np.array(inst['centroid']) for inst in target])
 
         bbox = [[inst['bbox'][0], inst['bbox'][1], inst['bbox'][0] + inst['bbox'][2],
                  inst['bbox'][1] + inst['bbox'][3]] for inst in target]
+
+        #real_centroid = [inst['real_centroid'] for inst in target]
         # bbox = torch.cat(bbox, dim=0)
         #
         # bbox = bbox.type(torch.float32)
@@ -187,19 +191,38 @@ def prepare_targets(targets) -> list:
 
         # filter out bins and background - filter out upper names containing 'bin' or 'background'
         filt = prepared_target['labels'] > 2
-        prepared_target['masks'] = prepared_target['masks'][filt, :, :]
-        prepared_target['rot'] = prepared_target['rot'][filt, :, :]
-        prepared_target['move'] = prepared_target['move'][filt, :]
-        prepared_target['labels'] = prepared_target['labels'][filt]
-        prepared_target['names'] = prepared_target['names'][filt]
-        prepared_target['box'] = np.array(prepared_target['box'])[filt].tolist()
-        prepared_target['centroid'] = np.array(prepared_target['centroid'])[filt].tolist()
-        prepared_target['centroid'] = np.array(
-            [(*world_to_image_coords((x, y, z), intrinsics), z) for x, y, z in prepared_target['centroid']])
+        if len(filt) == 1:
+            prepared_target['masks'] = prepared_target['masks']
+            prepared_target['rot'] = prepared_target['rot']
+            prepared_target['move'] = prepared_target['move']
+            prepared_target['labels'] = prepared_target['labels']
+            prepared_target['names'] = prepared_target['names']
+            prepared_target['box'] = np.array(prepared_target['box']).tolist()
+            prepared_target['centroid'] = np.array(prepared_target['image_centroid']).tolist()
+            #prepared_target["real_centroid"] = np.array(real_centroid).tolist()
+
+        else:
+            prepared_target['masks'] = prepared_target['masks'][filt, :, :]
+            prepared_target['rot'] = prepared_target['rot'][filt, :, :]
+            prepared_target['move'] = prepared_target['move'][filt, :]
+            prepared_target['labels'] = prepared_target['labels'][filt]
+            try:
+                prepared_target['names'] = prepared_target['names'][filt]
+            except IndexError:
+                print("IndexError: ", prepared_target['names'])
+            prepared_target['box'] = np.array(prepared_target['box'])[filt, :].tolist()
+            prepared_target['centroid'] = np.array(prepared_target['image_centroid'])[filt, :].tolist()
+#            prepared_target["real_centroid"] = np.array(real_centroid)[filt, :].tolist()
         if len(prepared_target['labels']) == 0:
             prepared_target = None
 
         prepared_targets.append(prepared_target)
+
+        # visualize
+        # for mask,centroid in zip(prepared_target['masks'], prepared_target['centroid']):
+        #     plt.imshow(mask.cpu().numpy())
+        #     plt.scatter(centroid[0], centroid[1])
+        #     plt.show()
 
     # List of dictionaries - one dictionary per image
     return prepared_targets
@@ -258,8 +281,8 @@ def collate_first_stage(images, targets, channels, gray):
     # please don't change the setup of the channels, or this will most likely break
 
     # gaussian blur
-    if random.random() > 0.5:
-        images = torch.nn.functional.avg_pool2d(images, 3, stride=1, padding=1)
+    # if random.random() > 0.5:
+    #     images = torch.nn.functional.avg_pool2d(images, 3, stride=1, padding=1)
     # # salt and pepper noise
     # if random.random() > 0.9:
     #     images = torch.nn.functional.dropout2d(images, p=0.02, training=True)
@@ -271,8 +294,8 @@ def collate_first_stage(images, targets, channels, gray):
     # if random.random() > 0.9:
     #     images[:, 0, :, :] = torchvision.transforms.ColorJitter()(images[:, 0, :, :] )
     # depth noise
-    if random.random() > 0.5:
-        images[:, 1, :, :] = images[:, 1, :, :] + torch.randn_like(images[:, 1, :, :]) * 2  # 2mm noise in depth
+    # if random.random() > 0.5:
+    #     images[:, 1, :, :] = images[:, 1, :, :] + torch.randn_like(images[:, 1, :, :]) * 2  # 2mm noise in depth
 
     return images, targets
 
@@ -335,8 +358,8 @@ def crop_tensor_with_padding(img_tensor, x1, y1, x2, y2):
     channels, height, width = img_tensor.shape
     y1, y2, x1, x2 = int(y1), int(y2), int(x1), int(x2)
 
-    crop_width = x2 - x1
-    crop_height = y2 - y1
+    target_width = x2 - x1
+    target_height = y2 - y1
 
     pad_left = max(0, -x1)
     pad_top = max(0, -y1)
@@ -344,11 +367,27 @@ def crop_tensor_with_padding(img_tensor, x1, y1, x2, y2):
     pad_bottom = max(0, y2 - height)
 
     if pad_left > 0 or pad_right > 0 or pad_top > 0 or pad_bottom > 0:
-        img_tensor = torch.nn.functional.pad(img_tensor, (pad_left, pad_right, pad_top, pad_bottom), mode='constant',
-                                             value=0)
+        img_tensor = torch.nn.functional.pad(img_tensor, (pad_left, pad_right, pad_top, pad_bottom), mode='constant', value=0)
 
-    cropped_tensor = img_tensor[:, y1:y2, x1:x2]
+    # Adjust crop coordinates based on padding
+    x1 += pad_left
+    y1 += pad_top
+
+    # Create an empty tensor of target size
+    cropped_tensor = torch.zeros((channels, target_height, target_width))
+
+    # Calculate the size of the actual content
+    content_height = min(y2, height + pad_top + pad_bottom) - y1
+    content_width = min(x2, width + pad_left + pad_right) - x1
+
+    # Copy the content to the target tensor
+    cropped_tensor[:, :content_height, :content_width] = img_tensor[:, y1:y1+content_height, x1:x1+content_width]
+
     return cropped_tensor
+    # if torch.sum(cropped_tensor) == 0:
+    #     print("crop is empty")
+    #     return None
+    # return torch.Tensor(cropped_tensor)
 
 
 def collate_fourth_stage(images, targets, crop_size):
@@ -356,60 +395,40 @@ def collate_fourth_stage(images, targets, crop_size):
 
     for image, target in zip(images, targets):
         # it's all the same image, but needs to be stacked as the masks are different
-        images_stacked_masked = [image * mask for mask in target['gt_masks']]
+        images_stacked_masked = [torch.Tensor(image * mask)  for mask in target['gt_masks']]
         # find the coords for the crop of each mask
         crops = [(w - crop_size // 2, h - crop_size // 2, w + crop_size // 2, h + crop_size // 2) for w, h, z
                  in target['gt_centroids']]
         # crop the images
         images_stacked_masked_cropped = [crop_tensor_with_padding(image, x1, y1, x2, y2) for image, (x1, y1, x2, y2) in
                                          zip(images_stacked_masked, crops)]
-        cropped_images.append(images_stacked_masked_cropped)
+        cropped_images.extend(images_stacked_masked_cropped)
 
     # stack the images
-    cropped_images = [torch.stack(image) for image in cropped_images]
+    # print(type(cropped_images))
+    # print(np.array(cropped_images).shape)
+    # cropped_images = torch.stack(cropped_images, dim=0)
+
+    for image in cropped_images:
+        if list(image.shape) != [3, 224, 224]:
+            print(image.shape)
+            print("not 3,224,224")
+            return None, None
 
     return cropped_images, targets
 
 
 def collate_viz(images, targets):
-    z_vec = targets['gt_z_direction_vectors']
-    for j, img in enumerate(images):
-        # debug viz
-        from matplotlib.colors import Normalize
-        from matplotlib.cm import ScalarMappable
+    for idx, image in enumerate(images):
+        for i, mask in enumerate(targets[idx]['masks']):
+            image = image
+            centroid = targets[idx]['image_centroid'][i]
+            plt.imshow(image.permute(1, 2, 0))
+            plt.imshow(mask, alpha=0.5)
+            plt.scatter(centroid[0], centroid[1])
 
-        img = np.transpose(img, (1, 2, 0))
-        img = img[:, :, :3]
-
-        fig, ax = plt.subplots(figsize=(10, 10))
-        ax.imshow(img)
-
-        start = np.array([img.shape[1] // 2, img.shape[0] // 2])
-        ax.scatter(start[0], start[1], c='r', s=10)
-        scaling_factor = 100
-        end = start + scaling_factor * np.array([z_vec[j][0], z_vec[j][1]])
-
-        # Create a set of points along the line
-        num_points = 100
-        points = np.linspace(start, end, num_points)
-
-        # Normalize the z-values of the points along the line
-        z_values = np.linspace(start[1] + scaling_factor * z_vec[j][2], end[1], num_points)
-        norm = Normalize(vmin=z_values.min(), vmax=z_values.max())
-        colors = plt.cm.viridis(norm(z_values))
-
-        # Plot the line with color based on z-value (height)
-        for i in range(num_points - 1):
-            ax.plot(points[i:i + 2, 0], points[i:i + 2, 1], '-', color=colors[i], alpha=0.8)
-
-        # Add a colorbar
-        sm = ScalarMappable(cmap='viridis', norm=norm)
-        sm.set_array([])
-        plt.colorbar(sm, ax=ax, label='Height')
-
-        plt.show()
-        print("z_vec", z_vec[j])
-        break
+            plt.savefig(f"viz/{idx}_{i}.png")
+            plt.close()
 
 
 def collate_fifth_stage(images, targets):
@@ -424,7 +443,7 @@ def collate_fifth_stage(images, targets):
     gt_zs = torch.cat(gt_zs, dim=0)
 
     # stack images
-    images = torch.cat(images, dim=0)
+    images = torch.stack(images, dim=0)
 
     return images, gt_z_dirs, gt_centroids, gt_zs
 
@@ -444,21 +463,54 @@ def collate_TM_GT(batch, channels=None, gray=True):
     images, targets = prepare_batch(batch)
     # make sure there is something to work with and select a subset of channels
     images, targets = collate_first_stage(images, targets, channels, gray)
+    # collate_viz(images, targets)
     # if there is nothing to work with, return None
     if images is None or targets is None:
         return None, None, None, None
         # extract the targets into a usable data structure (dict)
     images, gt_targets = collate_second_stage(images, targets)
+    # visualize the images
+    #collate_viz(images, targets)
     # get the crop size, either fixed or based on the max area box
     crop_size = collate_third_stage(images, gt_targets, fixed_size=True, box_expantion_ratio=0.1)
     # crop the images
     cropped_images, targets = collate_fourth_stage(images, gt_targets, crop_size)
-    # visualize the images
-    # collate_viz(images, targets, z_vec, j)
+
     # prepare the actuall target for the model + prepare centroids for possible input augmentation
     images, gt_z_dirs, gt_centroids, gt_zs = collate_fifth_stage(cropped_images, targets)
     # permute the microbatch
-    images, gt_z_dirs, gt_centroids, gt_zs = collate_permute_microbatch(images, gt_z_dirs, gt_centroids, gt_zs)
+    # images, gt_z_dirs, gt_centroids, gt_zs = collate_permute_microbatch(images, gt_z_dirs, gt_centroids, gt_zs)
+
+    # gt_z_dirs = gt_z_dirs.cpu().numpy()
+    # for idx, image in enumerate(images):
+    #     print(image.shape)
+    #     plt.imshow(image.permute(1, 2, 0)[:, :, 0])
+    #     # add the z direction
+    #
+    #     start = np.array([image.shape[1] // 2, image.shape[2] // 2])
+    #     scaling_factor = 100
+    #     end_gt_w = start + scaling_factor * np.array([gt_z_dirs[idx][0], gt_z_dirs[idx][1]])
+    #
+    #     # Create a set of points along the line for hat_w and gt_w
+    #     num_points = 100
+    #     points_gt_w = np.linspace(start, end_gt_w, num_points)
+    #
+    #     # Plot the lines in the original image (ax1)
+    #     for i in range(num_points - 1):
+    #         plt.plot(points_gt_w[i:i + 2, 0], points_gt_w[i:i + 2, 1], '.', color='b', alpha=0.5)
+    #     plt.savefig(f"viz/{random.randint(0, 1000)}.png")
+    #     plt.close()
+    #
+    # gt_z_dirs = torch.Tensor(gt_z_dirs)
+    # print(gt_z_dirs[idx], gt_centroids[idx], gt_zs[idx])
+
+    cut = 75
+    # if variable batch size is too big for the GPU, cut it down
+    if images.shape[0] > cut:
+        images = images[:cut]
+        gt_z_dirs = gt_z_dirs[:cut]
+        gt_centroids = gt_centroids[:cut]
+        gt_zs = gt_zs[:cut]
 
     return images, gt_z_dirs, gt_centroids, gt_zs
 
@@ -475,17 +527,19 @@ class CollateWrapper:
         return self.collate_fn(batch, self.channels, self.gray)
 
 
-def createDataLoader(path, batchsize=1, shuffle=True, num_workers=4, channels: list = None, split=0.9, gray=False):
+def createDataLoader(path, batchsize=1, shuffle=True, num_workers=0, channels: list = None, split=0.9, gray=False):
     ano_path = (path.joinpath('annotations', "merged_maskrcnn_centroid.json"))
     # ano_path = (path.joinpath('annotations', "merged_coco.json"))
-
+    # torch.manual_seed(42)
+    # random.seed(42)
+    # np.random.seed(42)
     collate = CollateWrapper(channels, gray=gray)
 
     # Load the COCO dataset
     dataset = CustomCocoDetection(root=str(path), annFile=str(ano_path))
 
     # subset the dataset
-    # dataset = Subset(dataset, range(0, 300))
+    dataset = Subset(dataset, range(0, 100))
 
     # Calculate the lengths of the train and validation sets
     train_len = int(len(dataset) * split)

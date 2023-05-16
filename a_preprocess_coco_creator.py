@@ -51,15 +51,15 @@ def create_annotations_json(labels, labels_info, tm, image_id, bin_transform, ca
             # use the local id to identify which transform to use
             if id == 0:
                 # background doesn't have a transform
-                anotation["transform"] = np.eye(4)
+                anotation["transform"] = [float(i) for i in np.eye(4).flatten().tolist()]
                 anotation["category_id"] = 0
             elif id == 1:
                 # bin transform is the same for all labels - changes only on a per-scan basis
                 anotation["category_id"] = 1
-                anotation["transform"] = bin_transform
+                anotation["transform"] = [float(i) for i in bin_transform]
             else:
                 # the rest of the labels have their own  transform
-                anotation["transform"] = tm[i - 2]
+                anotation["transform"] = [float(i) for i in tm[i - 2]]
                 anotation["category_id"] = global_id
 
             # anotation["supercategory"] = labels_info[id][0] # not needed
@@ -93,7 +93,7 @@ def prepare_data(image, anotations):
         anotation["category_id"] = int(anotation["category_id"])
         anotation["area"] = float(anotation["area"])
         anotation["segmentation"] = str(anotation["segmentation"])
-        anotation["transform"] = anotation["transform"].tolist()
+        anotation["transform"] = list(anotation["transform"])
         anotation["bbox"] = anotation["bbox"].tolist()
     return image, anotations
 
@@ -113,8 +113,8 @@ def create_json(results, categories, save_path, mean, std, i):
     # add the categories
     coco["categories"] = [{"id": i, "name": cat} for i, cat in enumerate(categories)]
 
-    coco["image_stats"] = {"mean": np.mean(mean, axis=0).astype(float).tolist(),
-                           "std": np.mean(std, axis=0).astype(float).tolist()}
+    coco["image_stats"] = {"mean": [float(i) for i in np.mean(mean, axis=0).astype(float).tolist()],
+                           "std": [float(i) for i in np.mean(std, axis=0).astype(float).tolist()]}
 
     # save the json file
     with open(save_path.joinpath(f'annotations', f'coco{i}.json'), 'w') as f:

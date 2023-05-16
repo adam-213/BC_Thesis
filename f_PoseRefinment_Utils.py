@@ -3,6 +3,7 @@ import numpy as np
 from PIL import Image
 from scipy.spatial.transform import Rotation
 import torch
+
 INTRINSICS = {
     'fx': 1181.077335,
     'fy': 1181.077335,
@@ -48,7 +49,7 @@ def image_to_world_coords(image_coords, INTRINSICS, Z):
 
 def get_prediction():
     # theoretically, an image should be input here but that is not happening yet
-    z_vec, centroid, mask, label, image, ground_truth_matrix = network_main()
+    z_vec, centroid, mask, label, image, ground_truth_matrix, ptc = network_main()
 
     centroid = centroid[0].cpu().detach().numpy()
     mask = mask[0].cpu().detach().numpy()
@@ -59,7 +60,7 @@ def get_prediction():
     world_centroid = image_to_world_coords(centroid[:2], INTRINSICS, centroid[2])
     world_centroid = [world_centroid[0].item(), world_centroid[1].item(), centroid[2].item()]
 
-    return z_vec, world_centroid, mask, label, image, ground_truth_matrix, INTRINSICS
+    return z_vec, world_centroid, mask, label, image, ground_truth_matrix, ptc, INTRINSICS
 
 
 def decompose_matrix(matrix):
@@ -108,3 +109,50 @@ def compose_matrix(combined, rot, move):
     new_matrix[3, 3] = 1
 
     return new_matrix
+
+
+def calculate_matrix(zvec, translation):
+    # Normalize the Z vector
+    z = np.array(zvec) / np.linalg.norm(zvec)
+
+    # Choose an arbitrary vector not parallel to the Z vector
+    if np.allclose(z, np.array([0, 1, 0])):
+        arbitrary_vector = np.array([1, 0, 0])
+    else:
+        arbitrary_vector = np.array([0, 1, 0])
+
+    # Calculate the X vector
+    x = np.cross(arbitrary_vector, z)
+    x = x / np.linalg.norm(x)
+
+    # Calculate the Y vector
+    y = np.cross(z, x)
+
+    # Construct the rotation matrix
+    rotation_matrix = np.array([x, y, z]).T
+
+    # Construct the full transformation matrix
+    transformation_matrix = np.identity(4)
+    transformation_matrix[:3, :3] = rotation_matrix
+    transformation_matrix[:3, 3] = translation
+
+    return transformation_matrix
+
+
+def fit_crop(ptc):
+    # find a bounding box that contains the point cloud
+    x_min, x_max = np.min(ptc[:, 0]), np.max(ptc[:, 0])
+    y_min, y_max = np.min(ptc[:, 1]), np.max(ptc[:, 1])
+
+    # find the center of the bounding box
+    x_center = (x_min + x_max) / 2
+    y_center = (y_min + y_max) / 2
+
+    return (x_min, x_max, y_min, y_max), (x_center, y_center)
+
+
+def crop_ptc(ptc, crop):
+    # crop the point cloud to the bounding box
+    x_min, x_max, y_min, y_max = crop
+    ptc = ptc[(ptc[:, 0] > x_min) & (ptc[:, 0] < x_max) & (ptc[:, 1] > y_min) & (ptc[:, 1] < y_max)]
+    return ptc

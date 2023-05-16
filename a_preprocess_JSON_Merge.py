@@ -36,7 +36,7 @@ def merge_coco_jsons(json_files, save_path):
 
     for file in json_files:
         # only merge the ones that contain the word end
-        if 'end' not in file.lower():
+        if 'end' not in file.lower() and "all" not in file.lower():
             continue
         print(f"Merging {file}...")
         with open(file, 'r') as f:
@@ -72,7 +72,7 @@ def merge_coco_jsons(json_files, save_path):
 
 if __name__ == '__main__':
     abspath = Path(__file__).parent.absolute()
-    coco_path = abspath.joinpath('COCOFULL_Dataset')
+    coco_path = abspath.joinpath('COCO_Big')
     jsonspath = coco_path.joinpath('annotations')
     json_files = glob.glob(str(jsonspath.joinpath('*.json')))
     save_path = jsonspath.joinpath('merged.json')

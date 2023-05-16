@@ -72,14 +72,14 @@ def prepare_inference():
     sel = np.array(channels)[chans_sel]
     mean, std = mean[sel], std[sel]
 
-    rcmodel = rcModel(5, 6, mean, std)
+    rcmodel = rcModel(5,14, mean, std)
 
     # create models
     tmmodel = peModel(3)
 
     # load weights
-    tmmodel.load_state_dict(torch.load('Unscaled_10_stage2.pth')['model_state_dict'])
-    rcmodel.load_state_dict(torch.load(base_path.joinpath("RCNN_Unscaled_19.pth"))['model_state_dict'])
+    #tmmodel.load_state_dict(torch.load('Unscaled_10_stage2.pth')['model_state_dict'])
+    rcmodel.load_state_dict(torch.load(base_path.joinpath("RCNN_Unscaled_34.pth"))['model_state_dict'])
 
     # set models to eval mode
     tmmodel.eval()
@@ -167,7 +167,7 @@ def translation_layer(best, image):
     x1, y1, x2, y2 = bbox
 
     # expand the bbox by k # TODO NO for the deit it needs toe be 224x224 fixed
-    k = 0.05
+    k = 0.00
     x1 = x1 * (1 - k)
     y1 = y1 * (1 - k)
     x2 = x2 * (1 + k)
@@ -395,7 +395,8 @@ def main():
         best[0]["masks"],  # MaskRCNN mask
         label_name,  # MaskRCNN label to get correct stl
         rcimages.squeeze(0).permute(1, 2, 0).cpu().detach().numpy(),  # MaskRCNN input image to get the depth map
-        gttm  # Ground truth pose
+        gttm,  # Ground truth pose,
+        ptc,  # Point cloud
 
     )
 

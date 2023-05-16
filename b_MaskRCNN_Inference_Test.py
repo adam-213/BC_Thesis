@@ -19,7 +19,7 @@ def display_image_and_mask(image, mask, box, threshold=0.1):
     img = cv2.addWeighted(img, 1, overlay, 0.5, 0)
 
     x1, y1, x2, y2 = box
-    rect = plt.Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False, edgecolor='g', linewidth=2)
+    # rect = plt.Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False, edgecolor='g', linewidth=2)
 
     # Compute the moments of the binary mask
     maskint = (mask * 256).astype(np.uint8)
@@ -33,7 +33,7 @@ def display_image_and_mask(image, mask, box, threshold=0.1):
 
     # Draw the centroid in the result image
     ax[0].scatter(centroid_x, centroid_y, c='g', s=50, marker='o')
-    ax[1].add_patch(rect)
+    # ax[1].add_patch(rect)
     ax[1].imshow(img)
 
     plt.show()
