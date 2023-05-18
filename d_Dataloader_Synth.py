@@ -143,36 +143,33 @@ import torch.nn.functional as F
 def image_stack(images, targets):
     padding = (150, 150, 150, 150)
     new_images, new_targets = [], []
+
     for image, target in zip(images, targets):
-        new_image, new_target = [], []
         target_masks = F.pad(target['masks'], padding, value=0)
         target_images = F.pad(image, padding, value=0)
+        instance_images, instance_targets = [], []
         for inst in range(len(target['masks'])):
-            if target['labels'][inst] <= 2:
+            if target['labels'][inst] <= 2 or target['labels'][inst] == 6:
                 continue
             centroid = world_to_image_coords(target['tm'][inst, [12, 13, 14]], intrinsics)
             maskedimage = target_images * target_masks[inst, :, :]
-            # pad the image by 150 on each side
-            # crop to 224x224 on the centroid
-            # assert centroid[0] < 1032 and centroid[1] < 772
             centroid = [centroid[0] + 150, centroid[1] + 150]
-
             maskedimage = maskedimage[:, centroid[1] - 112:centroid[1] + 112, centroid[0] - 112:centroid[0] + 112]
 
-            new_image.append(torch.Tensor(maskedimage))
-            new_target.append(torch.Tensor(target['tm'][inst, [8, 9, 10]]))
+            instance_images.append(torch.Tensor(maskedimage))
+            instance_targets.append(torch.Tensor(target['tm'][inst, [8, 9, 10]]))
 
-        if len(new_image) == 0 or len(new_target) == 0:
-            continue
-        new_targets.append(torch.stack(new_target))
-        new_images.append(torch.stack(new_image))
-    if len(new_images) == 0 or len(new_targets) == 0:
+        if instance_images and instance_targets:
+            new_images.append(torch.stack(instance_images))
+            new_targets.append(torch.stack(instance_targets))
+
+    if not new_images or not new_targets:
         return None, None
-    # Stack images on first dimension to get a tensor of shape (batch_size, C, H, W)
-    batched_images = torch.cat(new_images, dim=0)
-    batched_targets = torch.cat(new_targets, dim=0)
 
-    return batched_images, batched_targets
+    new_images = torch.cat(new_images, dim=0)
+    new_targets = torch.cat(new_targets, dim=0)
+
+    return new_images, new_targets
 
 
 def collate_fn_rcnn(batch, channels=None, grad=True):
@@ -185,7 +182,7 @@ def collate_fn_rcnn(batch, channels=None, grad=True):
 
     batched_images, batched_targets = image_stack(batched_images, prepared_targets)
     if batched_images is None or batched_targets is None:
-        return None, None, None, None
+        return None, None, None
     # Select channels to use
     if channels:
         batched_images = batched_images[:, channels, :, :]
@@ -204,7 +201,7 @@ def collate_fn_rcnn(batch, channels=None, grad=True):
         batched_images = batched_images[:cut]
         batched_targets = batched_targets[:cut]
 
-    return batched_images, batched_targets, None, None
+    return batched_images, batched_targets, None
 
 
 from torch.utils.data import DataLoader, Subset, random_split

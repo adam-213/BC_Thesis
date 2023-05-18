@@ -13,11 +13,13 @@ from matplotlib import pyplot as plt
 def _init_layer(layer):
     if isinstance(layer, nn.Linear):
         nn.init.kaiming_normal_(layer.weight)
+        # nn.init.xavier_normal_(layer.weight)
+        # nn.init.he_normal_(layer.weight)
         nn.init.zeros_(layer.bias)
 
 
 class CustomLoss(nn.Module):
-    def __init__(self, alpha=0.5, lambda_magnitude=0.1, lambda_range=1.0, use_geodesic_loss=True, beta=0.1):
+    def __init__(self, alpha=1, lambda_magnitude=0.0, lambda_range=0.0, use_geodesic_loss=True, beta=0.0):
         super().__init__()
         self.alpha = alpha
         self.lambda_magnitude = lambda_magnitude
@@ -64,23 +66,32 @@ class CustomLoss(nn.Module):
         mse = self.MSE(pred_norm, target)
 
         # Weighted combination of the main loss, magnitude regularization, and range regularization
-        # combined_loss = self.alpha * main_loss \
-        #                 + self.lambda_magnitude * mag_reg \
-        #                 + self.lambda_range * range_reg \
-        #                 + self.beta * mse
+        combined_loss = self.alpha * main_loss \
+                        + self.lambda_magnitude * mag_reg \
+                        + self.lambda_range * range_reg \
+                        + self.beta * mse
 
         if index is not None:
             # Return the loss for a single instance for plotting
-            return main_loss[index]
+            return combined_loss[index]
         else:
-            return torch.mean(main_loss)
+            return torch.mean(combined_loss)
+
+from torch.nn import Identity as Id
+
+class Identity(Id):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        p = super().forward()
+        return p, x
 
 
 class PoseEstimationModel(nn.Module):
-    def __init__(self, num_channels=7):
+    def __init__(self, num_channels=7, tuning=False):
         super(PoseEstimationModel, self).__init__()
         self.workround = False
-        self.Zloss = nn.MSELoss()
 
         self.Wloss = CustomLoss(use_geodesic_loss=True,
                                 alpha=1.0,
@@ -97,33 +108,38 @@ class PoseEstimationModel(nn.Module):
 
         self.W_head = nn.Sequential(
             nn.Linear(512, 4096),
-            #nn.BatchNorm1d(4096),
+            nn.BatchNorm1d(4096),
             nn.Hardswish(),
-           # nn.Dropout(0.3),
-            nn.Linear(4096, 2048),
-           # nn.BatchNorm1d(2048),
+            nn.Dropout(0.3),
+            nn.Linear(4096, 1024),
+            nn.BatchNorm1d(1024),
             nn.Hardswish(),
-            #nn.Dropout(0.2),
-            nn.Linear(2048, 512),
-           # nn.BatchNorm1d(512),
+            nn.Dropout(0.2),
+            nn.Linear(1024, 384),
+            nn.BatchNorm1d(384),
             nn.Hardswish(),
-            #nn.Dropout(0.2),
-            nn.Linear(512, 160),
+            nn.Dropout(0.2),
+            nn.Linear(384, 160),
             nn.Hardswish(),
-            #nn.Dropout(0.1),
+            nn.Dropout(0.1),
             nn.Linear(160, 3),
             nn.Tanh()  # normalize to [-1, 1] as the output is a direction vector aka a unit vector
         )
 
-        self.W_head.apply(_init_layer)
-        self.backbone.apply(_init_layer)
+        if not tuning:
+            self.W_head.apply(_init_layer)
+            self.backbone.apply(_init_layer)
+
 
     def forward(self, x, XYZ):
+        # test if every shape is divisible by 16
+        # if not, pad it
+        # print(x.shape)
+
         if x.shape[0] <= 1:
             x = torch.cat((x, x), dim=0)
             # XYZ = torch.cat((XYZ, XYZ), dim=0)
             self.workround = True
-            print("bs1")
         try:
             x = self.layer(self.input_norm, x)
             backbonex = self.layer(self.backbone, x)
@@ -134,7 +150,10 @@ class PoseEstimationModel(nn.Module):
             print(e)
             return None
 
-    def loss_W(self, hat_W, gt_W, gtz, plot, *plotargs):
+    def loss_W(self, hat_W, gt_W, plot, *plotargs):
+        # normalisation, but im not sure if its helping or hurting
+        # magnitude = torch.sqrt(torch.sum(hat_W ** 2, dim=1)).view(-1, 1)
+        # hat_W = hat_W / magnitude
         if random.random() < 0.001: self.plot(hat_W, gt_W, *plotargs)
         if plot: self.plot(hat_W, gt_W, *plotargs)
 
@@ -223,7 +242,7 @@ class PoseEstimationModel(nn.Module):
 
                 loss_value = self.Wloss(hat_W[img_index:img_index + 1], gt_W[img_index:img_index + 1], index=0)
                 ax1.set_title(f"{loss_value}")
-                plt.show()
+
                 fig.savefig(f"samples/xx_hn_d{batchepoch[1]}_{batchepoch[0]}_{img_index}.png")
                 plt.close(fig)
 
