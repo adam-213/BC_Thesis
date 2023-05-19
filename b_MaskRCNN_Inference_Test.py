@@ -72,7 +72,7 @@ def visualize_output(images, targets, outputs, threshold=0.1):
 
 if __name__ == '__main__':
     base_path = pathlib.Path(__file__).parent.absolute()
-    coco_path = base_path.joinpath('COCOFULL_Dataset')
+    coco_path = base_path.joinpath('known')
     channels = [0, 1, 2, 5, 9]
 
     train_dataloader, val_dataloader, stats = createDataLoader(coco_path, bs=1, num_workers=0,
@@ -84,7 +84,7 @@ if __name__ == '__main__':
     # model.cuda()
     model.eval()
 
-    checkpoint = torch.load("RCNN_Unscaled_4.pth")
+    checkpoint = torch.load("RCNN_Unscaled_19.pth")
     model.load_state_dict(checkpoint['model_state_dict'])
 
     images, targets = next(iter(val_dataloader))

@@ -49,7 +49,7 @@ def image_to_world_coords(image_coords, INTRINSICS, Z):
 
 def get_prediction():
     # theoretically, an image should be input here but that is not happening yet
-    z_vec, centroid, mask, label, image, ground_truth_matrix, ptc = network_main()
+    z_vec, centroid, mask, label, image, ground_truth_matrix, ptc,worldcentroid = network_main()
 
     centroid = centroid[0].cpu().detach().numpy()
     mask = mask[0].cpu().detach().numpy()
@@ -57,10 +57,13 @@ def get_prediction():
 
     image = image[:, :, [0, 1, 2, 3]]  # remove the albedo channel, which is only used in mrcnn
 
-    world_centroid = image_to_world_coords(centroid[:2], INTRINSICS, centroid[2])
-    world_centroid = [world_centroid[0].item(), world_centroid[1].item(), centroid[2].item()]
+    #world_centroid = image_to_world_coords(centroid[:2], INTRINSICS, centroid[2])
+    #world_centroid = [world_centroid[0].item(), world_centroid[1].item(), centroid[2].item()]
 
-    return z_vec, world_centroid, mask, label, image, ground_truth_matrix, ptc, INTRINSICS
+    # ic = world_to_image_coords(worldcentroid, INTRINSICS)
+    # wc = [ic[0], ic[1], worldcentroid[2].item()]
+
+    return z_vec, centroid, mask, label, image, ground_truth_matrix, ptc, INTRINSICS
 
 
 def decompose_matrix(matrix):
@@ -154,5 +157,6 @@ def fit_crop(ptc):
 def crop_ptc(ptc, crop):
     # crop the point cloud to the bounding box
     x_min, x_max, y_min, y_max = crop
-    ptc = ptc[(ptc[:, 0] > x_min) & (ptc[:, 0] < x_max) & (ptc[:, 1] > y_min) & (ptc[:, 1] < y_max)]
+    ptc = ptc[0,:,:,:]* (ptc[:, 0] > x_min) & (ptc[:, 0] < x_max) & (ptc[:, 1] > y_min) & (ptc[:, 1] < y_max).astype(np.float32)
     return ptc
+    # ptc je stale image cize you cant just multiply cut it by real coordinates needs to be done in image space

@@ -12,8 +12,6 @@ from pycocotools import mask as mask_util
 from tqdm import tqdm
 import multiprocessing as mp
 
-base_path = pathlib.Path(__file__).parent.absolute()
-cocopath = base_path.joinpath('COCO_Big', 'annotations')
 intrinsics = {
     'fx': 1181.077335,
     'fy': 1181.077335,
@@ -183,16 +181,17 @@ def match(gt, pre):
 
 def main():
     base_path = pathlib.Path(__file__).parent.absolute()
-    coco_path = base_path.joinpath('COCO_Big')
+    coco_path = base_path.joinpath('known')
     channels = [0, 1, 2, 5, 9]
-    full_loader, stats = createDataLoader(coco_path, bs=1, num_workers=0, channels=None, shuffle=True, # shuffle off is essential
-                                          dataset_creation=True) # otherwise everything is shuffled with images and annotations being mismatched
+    full_loader, stats = createDataLoader(coco_path, bs=1, num_workers=0, channels=None, shuffle=False,
+                                          # shuffle off is essential
+                                          dataset_creation=True)  # otherwise everything is shuffled with images and annotations being mismatched
     mean, std = stats
     dataset = full_loader.dataset
     cats = full_loader.dataset.coco.cats
     model = MaskRCNN(5, len(cats), mean[channels], std[channels])
 
-    checkpoint = torch.load("RCNN_Unscaled_34.pth")
+    checkpoint = torch.load("RCNN_Unscaled_19.pth")
     model.load_state_dict(checkpoint['model_state_dict'])
     model.cuda()
     model.eval()
@@ -213,7 +212,7 @@ def main():
 
         coco_dict["images"].append(
             {"id": image_id, "file_name": file_name, "height": height, "width": width, "license": lic})
-        # print(str(coco_path.joinpath("processed",f"{int(file_name.strip('train/').strip('.npz'))}.npz")))
+        print(str(coco_path.joinpath("processed", f"{int(file_name.strip('train/').strip('.npz'))}.npz")))
         # np.savez_compressed(str(coco_path.joinpath("processed",f"{int(file_name.strip('train/').strip('.npz'))}.npz")),
         #                     fullimages=fullimages.cpu().detach().numpy())
 
@@ -234,7 +233,7 @@ def main():
         #     for i in range(100 - 1):
         #         plt.plot(points_hat_w[i:i + 2, 0], points_hat_w[i:i + 2, 1], '+', color='g', alpha=0.5)
         #
-        # plt.savefig(f"i{idx}.png")
+        # #plt.savefig(f"i{idx}.png")
         # plt.show()
         # plt.close()
         # if idx > 100:
@@ -256,17 +255,31 @@ def main():
         annotations = []
         for i, best in enumerate(matched):
             annotation = process_prediction(best, image_id, cats)
-            if annotation :
+            if annotation:
                 annotations.append(annotation)
 
-            # visualize
-            plt.imshow(fullimages[0, 0:3, :, :].permute(1, 2, 0).cpu().detach())
-            plt.imshow(best[1].cpu().detach(), alpha=0.5)
-            ctr = world_to_image_coords(best[0], intrinsics)
-            plt.scatter(ctr[0], ctr[1], c='r')
-            plt.title(f"{best[2]} - cats {cats[best[2].item()]['name']}")
-            plt.savefig(f"i{idx}_{i}.png")
-            plt.close()
+            # # visualize
+            # plt.imshow(fullimages[0, 0:3, :, :].permute(1, 2, 0).cpu().detach())
+            # plt.imshow(best[1].cpu().detach(), alpha=0.5)
+            # ctr = world_to_image_coords(best[0], intrinsics)
+            # plt.scatter(ctr[0], ctr[1], c='r')
+            # plt.title(f"{best[2]} - cats {cats[best[2].item()]['name']}")
+            # # Project the 3D vector onto the 2D plane and scale by z-component
+            #
+            # tm = best[3].cpu().detach().numpy()
+            # zdir = tm[:3, 2]
+            # x,y = ctr[0], ctr[1]
+            # scaling_factor = 100
+            # start = np.array([x, y])
+            # end = start + scaling_factor * np.array([zdir[0], zdir[1]])
+            #
+            # points_hat_w = np.linspace(start, end, 100)
+            # for i in range(100 - 1):
+            #     plt.plot(points_hat_w[i:i + 2, 0], points_hat_w[i:i + 2, 1], '+', color='g', alpha=0.5)
+            #
+            # # plt.savefig(f"i{idx}_{i}.png")
+            # plt.show()
+            # plt.close()
 
         coco_dict["annotations"].extend([a for a in annotations if a is not None])
         annotation_id += 1
@@ -276,13 +289,13 @@ def main():
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
 
-    # with open(cocopath.joinpath("merged.json"), 'r') as f:
-    #     j = json.load(f)
-    #
-    # j['images'] = coco_dict['images']
-    # j['annotations'] = coco_dict['annotations']
-    # with open(cocopath.joinpath("merged_maskrcnn_centroid4.json"), 'w') as f:
-    #     json.dump(j, f)
+    with open(coco_path.joinpath("annotations", "merged.json"), 'r') as f:
+        j = json.load(f)
+
+    j['images'] = coco_dict['images']
+    j['annotations'] = coco_dict['annotations']
+    with open(coco_path.joinpath("annotations", "merged_maskrcnn_centroid.json"), 'w') as f:
+        json.dump(j, f)
 
 
 if __name__ == "__main__":

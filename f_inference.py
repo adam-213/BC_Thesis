@@ -60,7 +60,7 @@ def image_to_world_coords(image_coords, intrinsics, Z):
 
 def prepare_inference():
     base_path = pathlib.Path(__file__).parent.absolute()
-    coco_path = base_path.joinpath('COCOFULL_Dataset')
+    coco_path = base_path.joinpath('CCO_TE')
     channels = [0, 1, 2, 3, 4, 5, 9]
     chans_sel = [0, 1, 2, 5, 6]
     # create unshuffled dataloaders
@@ -72,13 +72,13 @@ def prepare_inference():
     sel = np.array(channels)[chans_sel]
     mean, std = mean[sel], std[sel]
 
-    rcmodel = rcModel(5,14, mean, std)
+    rcmodel = rcModel(5, 12, mean, std)
 
     # create models
     tmmodel = peModel(3)
 
     # load weights
-    #tmmodel.load_state_dict(torch.load('Unscaled_10_stage2.pth')['model_state_dict'])
+    tmmodel.load_state_dict(torch.load('Unscaled_80_stage2.pth')['model_state_dict'])
     rcmodel.load_state_dict(torch.load(base_path.joinpath("RCNN_Unscaled_34.pth"))['model_state_dict'])
 
     # set models to eval mode
@@ -139,52 +139,49 @@ def infer_mrcnn(model, image):
 from copy import deepcopy
 
 
-def translation_layer(best, image):
+def geometric(ptc, mask, tensor=False):
+    point_cloud = (ptc.squeeze(0) * torch.Tensor(mask)).reshape(3, -1)
+    valid_points = point_cloud[:, torch.any(point_cloud != 0, axis=0)]
+
+    if valid_points.size(1) != 0:
+        geometric_centroid = torch.mean(valid_points, axis=1)
+        if tensor:
+            return geometric_centroid
+        else:
+            return geometric_centroid[0].item(), geometric_centroid[1].item(), geometric_centroid[2].item()
+    else:
+        if tensor:
+            return torch.tensor([float('inf'), float('inf'), float('inf')])
+        else:
+            return float('inf'), float('inf'), float('inf')
+
+
+def translation_layer(best, image, ptc):
     # Prepare data for pose estimation
     # get bbox
     bbox = best[0]['boxes'].detach().numpy()
     # get mask
     mask = best[0]['masks'].detach().numpy()
 
-    # Compute the moments of the binary mask
-    maskd = deepcopy(mask).transpose(1, 2, 0)
-    maskint = (maskd * 255).astype(np.uint8)
-    maskthresh = cv2.threshold(maskint, 0, 240, cv2.THRESH_BINARY)[1]
-    moments = cv2.moments(maskthresh)
-
-    # Compute the centroid using the moments
-    if moments["m00"] != 0:
-        centroid_x = int(moments["m10"] / moments["m00"])
-        centroid_y = int(moments["m01"] / moments["m00"])
-        print("Centroid: ({}, {})".format(centroid_x, centroid_y))
-
-        # look up the depth from the depth image
-        depth_image = image[0, 3, :, :]
-        depth_value = depth_image[centroid_y, centroid_x]
-    else:
-        print("No valid centroid found.")
-        centroid_x, centroid_y, depth_value = None, None, None
-    x1, y1, x2, y2 = bbox
-
-    # expand the bbox by k # TODO NO for the deit it needs toe be 224x224 fixed
-    k = 0.00
-    x1 = x1 * (1 - k)
-    y1 = y1 * (1 - k)
-    x2 = x2 * (1 + k)
-    y2 = y2 * (1 + k)
-
-    # get the image with the correct channels - gs,d,a
-    # image = image[:, [0, 1, 2, 3], :, :]e
-    # # combine the rgb to grayscale by the formula
-    # rgb = image[:, [0, 1, 2], :, :]
-    # gs = torch.sum(rgb * torch.Tensor([0.2989, 0.5870, 0.1140]).unsqueeze(1).unsqueeze(1).unsqueeze(1), dim=1)
-    # gs = gs.unsqueeze(1)
-    # image = torch.cat((gs, image[:, 3:, :, :]), dim=1)
-
     # threshold the mask
     threshold = 0.8
     mask[mask > threshold] = 1
     mask[mask <= threshold] = 0
+
+    # get centroid
+
+    centroid = geometric(ptc, mask, tensor=False)
+    centroid_x, centroid_y = world_to_image_coords((centroid[0], centroid[1],centroid[2]),
+                                                   intrinsics)
+    print(centroid)
+
+    # calculate xy for cut
+    cx, cy = centroid_x, centroid_y
+    # calculate bbox
+    size = 112
+    x1, y1, x2, y2 = cx - size , cy - size , cx + size, cy + size
+
+    depth_value = centroid[2]
 
     cut = torch.cat(
         (image[:, 0:1, :, :] * 0.2989 + image[:, 1:2, :, :] * 0.5870 + image[:, 2:3, :, :] * 0.1140,
@@ -212,7 +209,7 @@ def translation_layer(best, image):
     plt.title(f"MRCNN_Results + Computed Centroid - {depth_value}")
     plt.show()
 
-    return masked_image_cropped, (centroid_x, centroid_y, depth_value), (x1, y1, x2, y2)
+    return masked_image_cropped, (centroid_x, centroid_y, depth_value), centroid
 
 
 def vis_mask(rcimags, best, XY):
@@ -353,16 +350,9 @@ def main():
         gttm = torch.from_numpy(np.Identity(4)).float()
         print("no match found")
 
-    masked_image_cropped, XYZ, world_coords = translation_layer(best, rcimages) # TODO add some sort of centroid heuristic
-    # to get the ones that are closest to the center of the image to get the ones that would be best reachable
-    print(XYZ)
-    # plt.imshow(masked_image_cropped[0, :3, :, :].permute(1, 2, 0).detach().numpy())
-    # plt.show()
-
-    # pnp_test(masked_image_cropped.clone(), ptc, world_coords)
-
-    # center crop with 224x224
-    masked_image_cropped = torchvision.transforms.functional.center_crop(masked_image_cropped, (224, 224)) # TODO move into translation layer
+    masked_image_cropped, XYZ, world_coords = translation_layer(best,
+                                                                rcimages,
+                                                                ptc)  # TODO add some sort of centroid heuristic
 
     # vis_mask(rcimages, best, XYZ)
 
@@ -386,8 +376,9 @@ def main():
     # visualize the predicted pose
     viz_dir(tmoutputs[0], masked_image_cropped, XYZ, gt_zvec, loss)
     print("Time taken: ", time.time() - t)
-
-    label_name = rcdata.dataset.dataset.coco.cats[best[0]["labels"].item()]["name"]
+    templabels = {10:"part_thruster_normalized_centered",4:"part_cogwheel_normalized_centered",9:"part_cogwheel_normalized_centered"}
+    #label_name = rcdata.dataset.dataset.coco.cats[best[0]["labels"].item()]["name"]
+    label_name = templabels[best[0]["labels"].item()]
 
     return (
         tmoutputs[:1].detach().numpy(),  # predicted zvec
@@ -396,7 +387,8 @@ def main():
         label_name,  # MaskRCNN label to get correct stl
         rcimages.squeeze(0).permute(1, 2, 0).cpu().detach().numpy(),  # MaskRCNN input image to get the depth map
         gttm,  # Ground truth pose,
-        ptc,  # Point cloud
+        ptc,  # Point cloud,
+        world_coords,  # World coordinates
 
     )
 

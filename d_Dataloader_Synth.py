@@ -79,13 +79,15 @@ def prepare_targets(targets) -> list:
     for target in targets:
         prepared_target = {}
         # Masks and mask labels
+        if not target:
+            continue
         inst_masks, inst_labels = prepare_masks(target)
 
         # Transformation Matrices
         inst_transforms = [torch.tensor(inst['transform']) for inst in target]
         # turn them into np arrays
         inst_transforms = [np.array(inst_transform) for inst_transform in inst_transforms]
-        # inst_transforms = [i.reshape((4, 4), order='F') for i in inst_transforms]
+        # inst_transforms = [i.reshape((4, 4))for i in inst_transforms]
         inst_transforms = [torch.from_numpy(inst_transform.flatten()) for inst_transform in inst_transforms]
         inst_transforms = torch.stack(inst_transforms, dim=0)
         inst_transforms = inst_transforms.type(torch.float32)
@@ -139,15 +141,20 @@ def world_to_image_coords(world_coords, intrinsics):
     u, v = round(u), round(v)
     return u, v
 
+
 import torch.nn.functional as F
+
+
 def image_stack(images, targets):
     padding = (150, 150, 150, 150)
     new_images, new_targets = [], []
+    tms = []
 
     for image, target in zip(images, targets):
         target_masks = F.pad(target['masks'], padding, value=0)
         target_images = F.pad(image, padding, value=0)
         instance_images, instance_targets = [], []
+        instance_tms = []
         for inst in range(len(target['masks'])):
             if target['labels'][inst] <= 2 or target['labels'][inst] == 6:
                 continue
@@ -158,18 +165,21 @@ def image_stack(images, targets):
 
             instance_images.append(torch.Tensor(maskedimage))
             instance_targets.append(torch.Tensor(target['tm'][inst, [8, 9, 10]]))
+            instance_tms.append(torch.Tensor(target['tm'][inst, :]))
 
         if instance_images and instance_targets:
             new_images.append(torch.stack(instance_images))
             new_targets.append(torch.stack(instance_targets))
+            tms.append(torch.stack(instance_tms))
 
     if not new_images or not new_targets:
-        return None, None
+        return None, None, None
 
     new_images = torch.cat(new_images, dim=0)
     new_targets = torch.cat(new_targets, dim=0)
+    tms = torch.cat(tms, dim=0)
 
-    return new_images, new_targets
+    return new_images, new_targets, tms
 
 
 def collate_fn_rcnn(batch, channels=None, grad=True):
@@ -180,7 +190,7 @@ def collate_fn_rcnn(batch, channels=None, grad=True):
 
     prepared_targets = prepare_targets(targets)
 
-    batched_images, batched_targets = image_stack(batched_images, prepared_targets)
+    batched_images, batched_targets, tms = image_stack(batched_images, prepared_targets)
     if batched_images is None or batched_targets is None:
         return None, None, None
     # Select channels to use
@@ -194,6 +204,36 @@ def collate_fn_rcnn(batch, channels=None, grad=True):
         (batched_images[:, 0:1, :, :] * 0.2989 + batched_images[:, 1:2, :, :] * 0.5870 + batched_images[:, 2:3, :,
                                                                                          :] * 0.1140,
          batched_images[:, 3:, :, :]), dim=1)
+
+    gt_z_dirs = batched_targets.cpu().numpy()
+    gt_tm = np.array(tms)
+    x = False
+    if x:
+        for idx, image in enumerate(batched_images):
+            print(image.shape)
+            plt.imshow(image.permute(1, 2, 0)[:, :, 0])
+            # add the z direction
+
+            start = np.array([image.shape[2] // 2, image.shape[1] // 2])
+            scaling_factor = 100
+            gtzv = gt_tm[idx, [2, 6, 10]]
+            end_gt_w = start + scaling_factor * np.array([gt_z_dirs[idx][0], gt_z_dirs[idx][1]])
+            end_tm_w = start + scaling_factor * np.array([gtzv[0], gtzv[1]])
+            plt.title(f"z_vec: {gt_z_dirs[idx,:]}-\n tm_vec: {gtzv}")
+            # Create a set of points along the line for hat_w and gt_w
+            num_points = 100
+            points_gt_w = np.linspace(start, end_gt_w, num_points)
+            points_tm_w = np.linspace(start, end_tm_w, num_points)
+
+            # Plot the lines in the original image (ax1)
+            for i in range(num_points - 1):
+                plt.plot(points_gt_w[i:i + 2, 0], points_gt_w[i:i + 2, 1], '.', color='b', alpha=0.5)
+                plt.plot(points_tm_w[i:i + 2, 0], points_tm_w[i:i + 2, 1], '.', color='r', alpha=0.5)
+            plt.show()
+            # plt.savefig(f"viz/{random.randint(0, 1000)}.png")
+            plt.close()
+
+        gt_z_dirs = torch.Tensor(gt_z_dirs)
 
     cut = 75
     # if variable batch size is too big for the GPU, cut it down
@@ -236,7 +276,6 @@ def createDataLoader(path, bs=1, shuffle=True, num_workers=6, channels: list = N
         # Calculate the lengths of the train and validation sets
         train_len = int(len(dataset) * split)
         val_len = len(dataset) - train_len
-
         # Create the train and validation subsets
         train_set, val_set = random_split(dataset,
                                           [train_len, val_len])  # this actually shuffles the dataset not just splits it
@@ -270,6 +309,6 @@ def main():
         if i > 10:
             return
 
+
 if __name__ == "__main__":
     main()
-

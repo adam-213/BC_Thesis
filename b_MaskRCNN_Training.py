@@ -55,8 +55,8 @@ class Trainer:
 
             print(f"Loss: {losses.item()}, Batch: {idx}/{len(self.train_dataloader)}, Epoch: {epoch}")
 
-            self.scheduler.step_cosine_annealing(epoch)
-
+            # self.scheduler.step_cosine_annealing(epoch)
+            self.scheduler.step()
             total_loss_list.append(self.uncuda(loss_dict))
 
         return total_loss_list
@@ -153,7 +153,7 @@ class Trainer:
 
             steploss = np.sum([loss["total_loss"] for loss in val_losses])
 
-            self.scheduler.step_reduce_on_plateau(torch.mean(torch.tensor(steploss)))
+            #self.scheduler.step_reduce_on_plateau(torch.mean(torch.tensor(steploss)))
 
             # Save the checkpoint
             if checkpoint_path and epoch % 2 == 0 and write:
@@ -239,7 +239,7 @@ class IntegratedCosineAnnealingReduceOnPlateau:
 
 def main():
     base_path = pathlib.Path(__file__).parent.absolute()
-    coco_path = base_path.joinpath('COCO_Big')
+    coco_path = base_path.joinpath('known')
     channels = [0, 1, 2, 5, 9]
 
     train_dataloader, val_dataloader, stats = createDataLoader(coco_path, bs=3, num_workers=8,
@@ -249,18 +249,31 @@ def main():
     cats = train_dataloader.dataset.dataset.coco.cats
     model = MaskRCNN(5, len(cats), mean, std)
     # model = MaskRCNN(5, 91, mean, std)
-    optimizer = torch.optim.RAdam(model.parameters(), lr=0.001, weight_decay=0.0001)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
     scaler = GradScaler()
-    batches_per_epoch = len(train_dataloader)
-    batches_per_cycle = 750
-    num_epochs = 35
-    T_max = batches_per_cycle
-    eta_min = 1e-5
-    scheduler = IntegratedCosineAnnealingReduceOnPlateau(optimizer, T_max, eta_min, )
+    lr = 3e-3
+    num_epochs = 20
+
+    #scheduler = IntegratedCosineAnnealingReduceOnPlateau(optimizer, T_max, eta_min, )
+
+    optimizer = torch.optim.RAdam(model.parameters(), lr=lr, weight_decay=0.002, eps=1e-8)
+
+    # Use a cosine learning rate scheduler with a linear warm-up phase
+    warmup_epochs = 3
+    total_steps = len(train_dataloader) * num_epochs
+    warmup_steps = warmup_epochs * len(train_dataloader)
+    # scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=lr, total_steps=total_steps,
+    #                                                 pct_start=warmup_steps / total_steps, anneal_strategy='cos')
+
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer,
+                                                    max_lr=lr,
+                                                    total_steps=total_steps,
+                                                    pct_start=warmup_steps / total_steps,
+                                                    anneal_strategy='cos',
+                                                    final_div_factor=600)
 
     trainer = Trainer(model, train_dataloader, val_dataloader, optimizer, device, scaler, scheduler)
     save_path = "RCNN_Unscaled_{}.pth"

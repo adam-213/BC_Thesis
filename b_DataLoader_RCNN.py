@@ -85,7 +85,7 @@ def prepare_targets(targets) -> list:
         inst_transforms = [torch.tensor(inst['transform']) for inst in target]
         # turn them into np arrays
         inst_transforms = [np.array(inst_transform) for inst_transform in inst_transforms]
-        #inst_transforms = [i.reshape((4, 4), order='F') for i in inst_transforms]
+        inst_transforms = [i.reshape((4, 4), order='F') for i in inst_transforms]
         inst_transforms = [torch.from_numpy(inst_transform) for inst_transform in inst_transforms]
         inst_transforms = torch.stack(inst_transforms, dim=0)
         inst_transforms = inst_transforms.type(torch.float32)

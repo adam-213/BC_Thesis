@@ -152,11 +152,11 @@ def prepare_transforms(target):
     try:
         inst_transforms = [torch.tensor(inst['transform']) for inst in target]
         reshaper = np.ones((4, 4))
-        #reshaper[1, 2] = -1
+        # reshaper[1, 2] = -1
         # turn them into np arrays, so we can reshape them correctly
         inst_transforms = [np.array(inst_transform) for inst_transform in inst_transforms]
         # Order F because the matrices are in column major order (mathematicians ...)
-        inst_transforms = [i.reshape((4, 4), order='F') * reshaper for i in inst_transforms]
+        inst_transforms = [i.reshape((4, 4), ) * reshaper for i in inst_transforms]
 
         # Extract rotation and translation
         inst_rotations = [inst_transform[:3, :3] for inst_transform in inst_transforms]
@@ -175,14 +175,7 @@ def prepare_transforms(target):
         print("inst_transforms: ", inst_transforms)
         return None, None
 
-    # now, the thinking goes like this:
-    # Since the matrices are aligned on the axis with the infinite rotational symetry (Z axis)
-    # We know that the rotation in the matrix will be aligned with the rotational symetry axis
-    # So we can turn this problem into predicting the changed Z axis, in effect the change in coordinate system
-    # This should basically dissregard the rotational symetry, therefore symplifying the problem drastically,
-    # this line can be defined as point slope form with xyz being predicted / calculated from the mask
-    # and the point being the center of mass of the mask
-    # and slopes being predicted by the network
+
 
     return inst_rotations, inst_translations, inst_transforms
 
@@ -539,29 +532,35 @@ def collate_TM_GT(batch, channels=None, gray=True):
     images, gt_z_dirs, gt_centroids, gt_tm = collate_fifth_stage(cropped_images, targets)
     # permute the microbatch
     # images, gt_z_dirs, gt_centroids = collate_permute_microbatch(images, gt_z_dirs, gt_centroids)
+    x = False
+    if x:
+        gt_z_dirs = gt_z_dirs.cpu().numpy()
+        gt_tm = gt_tm.cpu().numpy()
+        for idx, image in enumerate(images):
+            print(image.shape)
+            plt.imshow(image.permute(1, 2, 0)[:, :, 0])
+            # add the z direction
 
-    # gt_z_dirs = gt_z_dirs.cpu().numpy()
-    # for idx, image in enumerate(images):
-    #     print(image.shape)
-    #     plt.imshow(image.permute(1, 2, 0)[:, :, 0])
-    #     # add the z direction
-    #
-    #     start = np.array([image.shape[1] // 2, image.shape[2] // 2])
-    #     scaling_factor = 100
-    #     end_gt_w = start + scaling_factor * np.array([gt_z_dirs[idx][0], gt_z_dirs[idx][1]])
-    #     plt.title(f"z_vec: {gt_z_dirs[idx]}")
-    #     # Create a set of points along the line for hat_w and gt_w
-    #     num_points = 100
-    #     points_gt_w = np.linspace(start, end_gt_w, num_points)
-    #
-    #     # Plot the lines in the original image (ax1)
-    #     for i in range(num_points - 1):
-    #         plt.plot(points_gt_w[i:i + 2, 0], points_gt_w[i:i + 2, 1], '.', color='b', alpha=0.5)
-    #     plt.show()
-    #     #plt.savefig(f"viz/{random.randint(0, 1000)}.png")
-    #     plt.close()
+            start = np.array([image.shape[1] // 2, image.shape[2] // 2])
+            scaling_factor = 100
+            gtzv = gt_tm[idx][:3, 2]
+            end_gt_w = start + scaling_factor * np.array([gt_z_dirs[idx][0], gt_z_dirs[idx][1]])
+            end_tm_w = start + scaling_factor * np.array([gtzv[0], gtzv[1]])
+            plt.title(f"z_vec: {gt_z_dirs[idx]}- tm_vec: {gtzv}")
+            # Create a set of points along the line for hat_w and gt_w
+            num_points = 100
+            points_gt_w = np.linspace(start, end_gt_w, num_points)
+            points_tm_w = np.linspace(start, end_tm_w, num_points)
 
-    gt_z_dirs = torch.Tensor(gt_z_dirs)
+            # Plot the lines in the original image (ax1)
+            for i in range(num_points - 1):
+                plt.plot(points_gt_w[i:i + 2, 0], points_gt_w[i:i + 2, 1], '.', color='b', alpha=0.5)
+                plt.plot(points_tm_w[i:i + 2, 0], points_tm_w[i:i + 2, 1], '.', color='r', alpha=0.5)
+            plt.show()
+            # plt.savefig(f"viz/{random.randint(0, 1000)}.png")
+            plt.close()
+
+        gt_z_dirs = torch.Tensor(gt_z_dirs)
     cut = 75
     if images.shape[0] > cut:
         images = images[:cut]
@@ -584,7 +583,7 @@ class CollateWrapper:
 
 
 def createDataLoader(path, batchsize=1, shuffle=True, num_workers=4, channels: list = None, split=0.9, gray=False):
-    ano_path = (path.joinpath('annotations', "merged_maskrcnn_centroid4.json"))
+    ano_path = (path.joinpath('annotations', "merged_maskrcnn_centroid.json"))
     # ano_path = (path.joinpath('annotations', "merged_coco.json"))
 
     collate = CollateWrapper(channels, gray=gray)
@@ -669,3 +668,12 @@ def createDataLoader(path, batchsize=1, shuffle=True, num_workers=4, channels: l
 #
 # # Stack the rotated images into a new tensor
 # images_stacked_rotated = torch.stack(rotated_images, dim=0)
+
+# now, the thinking goes like this:
+    # Since the matrices are aligned on the axis with the infinite rotational symetry (Z axis)
+    # We know that the rotation in the matrix will be aligned with the rotational symetry axis
+    # So we can turn this problem into predicting the changed Z axis, in effect the change in coordinate system
+    # This should basically dissregard the rotational symetry, therefore symplifying the problem drastically,
+    # this line can be defined as point slope form with xyz being predicted / calculated from the mask
+    # and the point being the center of mass of the mask
+    # and slopes being predicted by the network

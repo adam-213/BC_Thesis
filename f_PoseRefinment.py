@@ -28,9 +28,9 @@ class ICP_PoseRefinement:
     def prepare(self):
         self.ptc = self.ptc * self.mask
         # fit a crop to the point cloud for cropping the stl
-        crop = utils.fit_crop(self.ptc)
+        coords,center = utils.fit_crop(self.ptc)
         # crop the point cloud
-        self.ptc = utils.crop_ptc(self.ptc, crop)
+        self.ptc = utils.crop_ptc(self.ptc, coords)
         # load the stl and convert to ply
         self.object = self.stl2ply()
 
@@ -105,7 +105,19 @@ def main():
     # get the data from the networks - using traning data for now
     z_vec, world_centroid, mask, label, image, ground_truth_matrix, ptc, INTRINSICS = utils.get_prediction()
 
+    # detach and convert to numpy
+#    mask = mask.detach().cpu().numpy()
+    ptc = ptc.detach().cpu().numpy()
+    #image = image.detach().cpu().numpy()
+
+
     init_tm = utils.calculate_matrix(z_vec, world_centroid)
+
+    # run the icp
+    icp = ICP_PoseRefinement(init_tm, stl_path.joinpath(f'{label}.stl'), ptc, mask)
+
+    icp.run()
+    pose = icp.tm
 
     return pose, init_tm, ground_truth_matrix, stl_path.joinpath(f'{label}.stl')
 

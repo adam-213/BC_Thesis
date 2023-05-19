@@ -39,8 +39,8 @@ class Preprocessor:
 
     def __init__(self):
         self.path = pathlib.Path(__file__).parent.absolute()
-        self.data_path = self.path.joinpath('Raw_Big')
-        self.coco_path = self.path.joinpath('COCO_Big')
+        self.data_path = self.path.joinpath('RawDS')
+        self.coco_path = self.path.joinpath('known')
         self.save_path = self.coco_path.joinpath('train')
 
         if not self.save_path.exists():
@@ -194,11 +194,13 @@ class Preprocessor:
         setup_rendering()
         # load stls for the parts so we can compute occlusion
         stls = {}
-        for item in ["cogwheel_normalized", "thruster_normalized", "cchannel_normalized", "double_normalized",
-                     "halfcuboid_normalized", "halfthruster_normalized", "hanger_normalized", "lockinsert_normalized",
-                     "squaredonut_normalized", "squaretube_normalized", "tube_normalized"]:
-            name = "part_" + item + "_centered"
-            stls[name] = f"stl/{name}.stl"
+        stls['part_thruster'] = f"stl/part_thruster.stl"
+        stls['part_cogwheel'] = f"stl/part_cogwheel.stl"
+        # for item in ["cogwheel_normalized", "thruster_normalized", "cchannel_normalized", "double_normalized",
+        #              "halfcuboid_normalized", "halfthruster_normalized", "hanger_normalized", "lockinsert_normalized",
+        #              "squaredonut_normalized", "squaretube_normalized", "tube_normalized"]:
+        #     name = "part_" + item + "_centered"
+        #     stls[name] = f"stl/{name}.stl"
 
 
 

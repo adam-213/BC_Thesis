@@ -72,7 +72,7 @@ def merge_coco_jsons(json_files, save_path):
 
 if __name__ == '__main__':
     abspath = Path(__file__).parent.absolute()
-    coco_path = abspath.joinpath('COCO_Big')
+    coco_path = abspath.joinpath('known')
     jsonspath = coco_path.joinpath('annotations')
     json_files = glob.glob(str(jsonspath.joinpath('*.json')))
     save_path = jsonspath.joinpath('merged.json')

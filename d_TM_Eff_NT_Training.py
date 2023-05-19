@@ -13,6 +13,7 @@ import random
 import numpy as np
 import seaborn as sns
 from d_Dataloader_TM_CNN_NT import createDataLoader
+from d_Dataloader_Synth import createDataLoader as synthDataLoader
 from d_TM_Eff_NT import PoseEstimationModel
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
 
@@ -200,11 +201,14 @@ class Trainer:
 
 
 def train(base_path, coco_path, channels, gray):
-    # train_dataloader, val_dataloader = createDataLoader(coco_path, batchsize=3, channels=channels, num_workers=8,
-    #                                                     shuffle=True, gray=gray)
-    from d_Dataloader_Synth import createDataLoader
-    train_dataloader, val_dataloader, _ = createDataLoader(coco_path, bs=3, channels=channels, num_workers=10,
-                                                           shuffle=True)
+    torch.random.manual_seed(42)
+    np.random.seed(42)
+    random.seed(42)
+    # train_dataloader, val_dataloader = createDataLoader(coco_path, batchsize=3, channels=channels, num_workers=10,
+    #                                                     shuffle=False, gray=gray)
+
+    train_dataloader, val_dataloader, _ = synthDataLoader(coco_path, bs=3, channels=channels, num_workers=10,
+                                                           shuffle=True ,anoname="merged.json")
 
     model = PoseEstimationModel(len(channels) - 2 if gray else len(channels))
 
@@ -260,8 +264,7 @@ def train(base_path, coco_path, channels, gray):
 def tune(base_path, coco_path, channels, gray):
     # train_dataloader, val_dataloader = createDataLoader(coco_path, batchsize=3, channels=channels, num_workers=8,
     #                                                     shuffle=True, gray=gray)
-    from d_Dataloader_Synth import createDataLoader
-    train_dataloader, val_dataloader, _ = createDataLoader(coco_path, bs=2, channels=channels, num_workers=10,
+    train_dataloader, val_dataloader, _ = synthDataLoader(coco_path, bs=2, channels=channels, num_workers=10,
                                                            shuffle=True)
 
     # model = PoseEstimationModel(len(channels) - 2 if gray else len(channels))
@@ -320,7 +323,7 @@ def tune(base_path, coco_path, channels, gray):
 
 if __name__ == '__main__':
     base_path = pathlib.Path(__file__).parent.absolute()
-    coco_path = base_path.joinpath('COCO_Big')
+    coco_path = base_path.joinpath('known')
     channels = [0, 1, 2, 5]
     gray = True
     # time.sleep(3000)
