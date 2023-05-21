@@ -10,6 +10,7 @@ from scipy import ndimage
 from scipy.spatial.transform import Rotation
 import matplotlib.pyplot as plt
 
+### LEGACY ###
 
 def D2FP16(depth):
     # max continuous values for fp16 is 4097 somehow, oh righ 4096 + a zero
@@ -79,18 +80,21 @@ def merge(*args):
     # handled in the colate function
     pass
 
-
-def save_NPZ(arr_dict, save_path, index):
-    # magic
-    np.savez_compressed(str(save_path.joinpath(f'{index}.npz')), **arr_dict)
-
-
 # def scale(arr):
 #     # scale to 0 - 1
 #     arr = arr - np.min(arr)
 #     arr = arr / np.max(arr)
 #
 #     return arr
+
+
+### LEGACY END ###
+
+def save_NPZ(arr_dict, save_path, index):
+    # magic
+    np.savez_compressed(str(save_path.joinpath(f'{index}.npz')), **arr_dict)
+
+
 
 
 def render(path, T):
@@ -150,7 +154,7 @@ def render(path, T):
     bpy.context.scene.render.simplify_subdivision_render = 1
 
     # save the image to the buffer
-    file = f'E:\\dummy{random.randint(10000, 12312312312)}.png'
+    file = f'E:\\dummy{random.randint(10000, 12312312312)}.png' # this was intended for paralelization but bledner is not thread safe
     bpy.context.scene.render.filepath = file
     bpy.context.scene.render.image_settings.file_format = 'PNG'
     bpy.ops.render.render(

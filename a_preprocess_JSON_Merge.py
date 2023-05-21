@@ -29,11 +29,17 @@ def validate_merged_coco_json(file_path):
     print(f"The merged JSON file is valid and contains {num_images} images, {num_annotations} annotations, and {num_categories} categories.")
 
 def merge_coco_jsons(json_files, save_path):
+    """merge the jsons with end in their name with checking for duplicates"""
     merged_json = {}
     mean_list = []
     std_list = []
+    idx = 0
+    processed_images = {}
 
-    for idx, file in enumerate(json_files):
+    for file in json_files:
+        if 'end' not in file.lower() and "all" not in file.lower():
+            continue
+        print(f"Merging {file}...")
         with open(file, 'r') as f:
             coco_json = json.load(f)
 
@@ -45,14 +51,24 @@ def merge_coco_jsons(json_files, save_path):
             merged_json['info'] = coco_json['info']
             merged_json['categories'] = coco_json['categories']
             merged_json['licenses'] = coco_json['licenses']
-            merged_json['annotations'] = coco_json['annotations']
-            merged_json['images'] = coco_json['images']
-        else:
-            merged_json['annotations'].extend(coco_json['annotations'])
-            merged_json['images'].extend(coco_json['images'])
+            merged_json['annotations'] = []
+            merged_json['images'] = []
+
+        for image in coco_json['images']:
+            if image['id'] not in processed_images:
+                merged_json['images'].append(image)
+                processed_images[image['id']] = image
+
+        for annotation in coco_json['annotations']:
+            image_id = annotation['image_id']
+            if image_id in processed_images:
+                if annotation not in merged_json['annotations']:
+                    merged_json['annotations'].append(annotation)
 
         mean_list.append(coco_json['image_stats']['mean'])
         std_list.append(coco_json['image_stats']['std'])
+
+        idx += 1
 
     merged_json['image_stats'] = {
         'mean': np.mean(mean_list, axis=0).astype(float).tolist(),
@@ -64,7 +80,10 @@ def merge_coco_jsons(json_files, save_path):
 
 
 if __name__ == '__main__':
-    json_files = glob.glob('./*.json')
-    save_path = Path('merged.json')
+    abspath = Path(__file__).parent.absolute()
+    coco_path = abspath.joinpath('RevertDSBIG')
+    jsonspath = coco_path.joinpath('annotations')
+    json_files = glob.glob(str(jsonspath.joinpath('*.json')))
+    save_path = jsonspath.joinpath('merged.json')
     merge_coco_jsons(json_files, save_path)
     validate_merged_coco_json(save_path)

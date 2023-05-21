@@ -3,20 +3,18 @@
 # However there might be rather high processing costs for that
 
 import multiprocessing as mp
-# core
 import pathlib
-
 import pycocotools.coco as coco
-# installed
 from tqdm import tqdm
 
-# local
 from a_preprocess_IO_Functions import *
 from a_preprocess_coco_creator import *
 from a_preprocess_utils import *
 
 
 class UniqueList(list):
+    """List with unique elements, so an ordered set, because python does ordered set but unreliably depending on version"""
+
     def append(self, object):
         if object not in self:
             super(UniqueList, self).append(object)
@@ -37,10 +35,10 @@ class UniqueList(list):
 
 class Preprocessor:
 
-    def __init__(self):
+    def __init__(self, source, destination):
         self.path = pathlib.Path(__file__).parent.absolute()
-        self.data_path = self.path.joinpath('RawDS')
-        self.coco_path = self.path.joinpath('CCO_TE')
+        self.data_path = self.path.joinpath(source)
+        self.coco_path = self.path.joinpath(destination)
         self.save_path = self.coco_path.joinpath('train')
 
         if not self.save_path.exists():
@@ -58,6 +56,7 @@ class Preprocessor:
 
     def paths(self, scene_path):
         scene_path = str(scene_path)
+        # standardised paths from the generator, but not elswere so use with caution
         path = \
             {
                 "bin_transform": scene_path + "_bin_transform.txt",
@@ -84,11 +83,7 @@ class Preprocessor:
                         self.scans.append(scan_path)
 
     def scan_load(self, scene_path):
-        """Read single scan
-        scene_path: $Bakalarka$\\DataSets\\EXR\\DS_XX_YY\\captures\\scan_xxx
-        where XX is the dataset number and YY is the part number
-        DS_XX_YY_M will be reserved for mixed bins if I ever figure out if that is possible
-        """
+        """Read single scan """
         relative_path = self.paths(scene_path)
         bin_transform = load_bin_transform(relative_path["bin_transform"])
         labels = load_labels(relative_path["labels"])
@@ -107,7 +102,9 @@ class Preprocessor:
         scan = self.scan_load(scan_path)
         # print("Processing scan: ", scan_path)
 
-        # create dict of all the wanted data in fp16
+        # create dict of all the wanted data in fp16,
+        # this technically saves space but not really, as the images arent that big
+
         # inputs = {}
         # inputs['rgb'] = RGB_EXR2FP16(scan[6])
         # inputs['depth'] = D2FP16(scan[4])
@@ -121,7 +118,7 @@ class Preprocessor:
         inputs['normals'] = scan[7]
         inputs['intensities'] = scan[5]
 
-        # # scale everything to 0-1
+        # # scale everything to 0-1, turned off because the data is needed for pose estimation
         # for key, value in inputs.items():
         #     inputs[key] = scale(value)
 
@@ -132,10 +129,9 @@ class Preprocessor:
             shapes = inputs['depth'].shape
 
         # create the image part of the json - for this specific scan
-        # will need to be merged with the rest of the json
         image = create_image_json(shapes, i)
 
-        # save the image array to a npz file with the correct name
+        # save the image array to a npz file with the correct name  - write npz file for image input storage
         save_NPZ(inputs, self.save_path, i)
 
         # compute mean and std for normalization for each channel in the scan
@@ -156,7 +152,7 @@ class Preprocessor:
 
         stats = [mean, std]
 
-        # create the annotations part of the json - for this specific scan
+        # create the annotation part of the json - for this specific scan
         annotations = create_annotations_json(labels, labels_info, tm, i, scan[0], self.categories, inputs, stats,
                                               stls)
 
@@ -165,7 +161,8 @@ class Preprocessor:
 
         return result, mean, std
 
-    def worker(self, use_mp=False):
+    def worker(self, start, stop):
+        print(start, stop)
         """Process all scans"""
         # create categoies by iterating over all scans - but only on labels_info
         print('Creating categories')
@@ -177,35 +174,33 @@ class Preprocessor:
         self.categories.sort()
         print("Categories: ", self.categories)
 
-        # load stls for the parts so we can compute occlusion
+        # load stls for the parts so we can compute occlusion, this should probably be a parameter in the future
         stls = {}
-        stls["part_thruster"] = "stl/part_thruster1.stl"
-        stls["part_cogwheel"] = "stl/part_cogwheel1.stl"
+        stls["part_thruster"] = "stl/part_thruster.stl"
+        stls["part_cogwheel"] = "stl/part_cogwheel.stl"
 
+        for item in ["cogwheel_normalized", "thruster_normalized", "cchannel_normalized", "double_normalized",
+                     "halfcuboid_normalized", "halfthruster_normalized", "hanger_normalized", "lockinsert_normalized",
+                     "squaredonut_normalized", "squaretube_normalized", "tube_normalized"]:
+            name = "part_" + item + "_centered"
+            stls[name] = f"stl/{name}.stl"
+
+        use_mp = False
         # start muliprocessing pool
         if use_mp:
-            pool = mp.Pool(mp.cpu_count())
-            # process all scans
-            results = []
-            for i, scan_path in enumerate(self.scans):
-                results.append(pool.apply_async(self.process, args=(scan_path, i, stls)))
-            pool.close()
-            pool.join()
-            results = [r.get() for r in results]
-            results, means, stds = zip(*results)
+            # dont us mp blender/bpy doesnt like it
+            raise NotImplementedError("Blender doesnt like multiprocessing")
         else:
             results = []
             # for i, scan_path in enumerate(tqdm(np.array(self.scans)[list(np.random.randint(0, len(self.scans), 25))])):
-            start = 400
-            stop = 600
             for i, scan_path in enumerate(tqdm(self.scans[start:])):
                 i = i + start
-                if i == stop + start:
+                if i == stop + start or i == len(self.scans) - 1:
                     res, means, stds = zip(*results)
                     # combine the results into one json
                     print('Creating json')
                     print("categories: ", self.categories)
-                    create_json(res, self.categories, self.coco_path, means, stds, f"_End_{start}_{stop+start}")
+                    create_json(res, self.categories, self.coco_path, means, stds, f"_End_{start}_{stop + start}")
                     return
                 results.append(self.process(scan_path, i, stls))
                 if i % 50 == 0 and i != start:
@@ -222,7 +217,20 @@ class Preprocessor:
 
 
 if __name__ == '__main__':
-    preprocessor = Preprocessor()
-    preprocessor.load_scan_paths()
-    preprocessor.worker(use_mp=False)
-    print('Done')
+    if __name__ == "__main__":
+        import argparse
+
+        parser = argparse.ArgumentParser(description="Preprocessor worker")
+        parser.add_argument("--start", type=int, required=False, help="Start index for the worker", default=0)
+        parser.add_argument("--number", type=int, required=False, help="Number of scans to process", default=100)
+        parser.add_argument("--source", type=str, required=False, help="Path to the scans", default="RawDS")
+        parser.add_argument("--target", type=str, required=False, help="Path to the output", default="ProcessedDS")
+
+        args = parser.parse_args()
+        start, stop, source, target = args.start, args.start + args.number, args.source, args.target
+        # source, target = "test", "test_ds"
+        # start, stop = 0, 100
+
+        preprocessor = Preprocessor(source, target)
+        preprocessor.load_scan_paths()
+        preprocessor.worker(start, stop)

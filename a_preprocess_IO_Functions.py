@@ -11,17 +11,21 @@ import numpy as np
 def load_bin_transform(path):
     """Transformation matrix for the bin"""
     # read the transform file
-    with open(path, 'r') as f:
-        # read the first line
-        line = f.readline()
-        # split the line into a list
-        line = line.split()
-        # convert the list to a numpy array
-        line = np.array(line)
-        # convert the array to a float32
-        line = line.astype(np.float32)
-        # return the array
-        return line
+    try:
+        with open(path, 'r') as f:
+            # read the first line
+            line = f.readline()
+            # split the line into a list
+            line = line.split()
+            # convert the list to a numpy array
+            line = np.array(line)
+            # convert the array to a float32
+            line = line.astype(np.float32)
+            # return the array
+            return line
+    except FileNotFoundError:
+        print("File not found: ", path)
+        return None
 
 
 def load_labels(path):
@@ -35,7 +39,6 @@ def load_labels(path):
 
 
 def load_labels_info(path):
-    """TODO Documentation Required"""
     with open(path, 'r') as f:
         lines = f.read()
     lines = lines.split("\n")
@@ -52,7 +55,6 @@ def load_labels_info(path):
 
 
 def load_part_transforms(path):
-    """TODO Documentation Required"""
     with open(path, 'r') as f:
         lines = f.read()
     lines = lines.split("\n")
@@ -76,7 +78,6 @@ def load_exr_positons(path):
 
 
 def load_exr_intensities(path):
-    """TODO Documentation Required"""
     # read the exr file
     # cv.COLORMAP_HSV and cv.IMREAD_ANYDEPTH are very necessary otherwise we are stuck with uint8
     img = cv.imread(str(path), cv.COLORMAP_HSV | cv.IMREAD_ANYDEPTH)

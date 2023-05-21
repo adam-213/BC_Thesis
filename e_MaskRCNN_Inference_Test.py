@@ -8,6 +8,7 @@ from b_DataLoader_RCNN import createDataLoader
 from c_MaskRCNN import MaskRCNN
 
 
+# dont use this , use f_inference.py instead
 def display_image_and_mask(image, mask, box, threshold=0.1):
     fig, ax = plt.subplots(1, 2, figsize=(20, 10))
 

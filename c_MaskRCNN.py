@@ -58,6 +58,7 @@ class MaskRCNN(nn.Module):
         return self.model(images, targets)
 
     def customload(self, path, device, channels=10):
+        """Not acutally used, but would work if the model wanted to load different weights than the 'default'"""
         # Load the pre-trained state dict
         state_dict = torch.load(path, map_location=device)
 

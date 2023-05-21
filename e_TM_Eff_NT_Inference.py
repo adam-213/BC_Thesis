@@ -14,7 +14,7 @@ from b_Dataloader_TM_CNN_NT import createDataLoaderM
 from c_TM_Eff_NT import PoseEstimationModel
 
 
-
+# same here, dont use this it moght not even work, use f_inference.py instead
 model.cuda()
 model.eval()
 

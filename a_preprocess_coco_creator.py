@@ -63,7 +63,6 @@ def create_annotations_json(labels, labels_info, tm, image_id, bin_transform, ca
                 anotation["category_id"] = global_id
 
             # anotation["supercategory"] = labels_info[id][0] # not needed
-            # TODO consider adding the following for instances where area is less than x
             # ann["iscrowd"] = 0 # not needed
             annotations.append(anotation)
             # box = anotation["bbox"]

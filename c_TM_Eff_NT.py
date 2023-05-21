@@ -49,16 +49,14 @@ class CustomLoss(nn.Module):
         # Normalize the predicted vectors
         pred_norm = F.normalize(pred, p=2, dim=1)
 
-        # Calculate the main loss (geodesic or squared Euclidean)
+        # Calculate the main loss geodesic or squared Euclidean
         if self.use_geodesic_loss:
             main_loss = self.geodesic_loss(pred_norm, target)
         else:
             main_loss = self.squared_euclidean_loss(pred_norm, target)
 
-        # Calculate the magnitude regularization term
         mag_reg = self.magnitude_regularization(pred_norm)
 
-        # Calculate the range regularization term
         range_reg = self.range_regularization(pred_norm)
 
         mse = self.MSE(pred_norm, target)
@@ -88,7 +86,6 @@ class PoseEstimationModel(nn.Module):
                                 beta=0)
         # self.Wloss = torch.nn.MSELoss()
         self.input_norm = nn.BatchNorm2d(num_channels)
-        # self.rotation_equivariant_layer = RotationEquivariantLayer(num_channels, mid_channels, num_rotations)
         self.backbone = timm.create_model("deit3_medium_patch16_224", pretrained=False,
                                           in_chans=num_channels, num_classes=0)
 
@@ -118,7 +115,7 @@ class PoseEstimationModel(nn.Module):
         self.backbone.apply(_init_layer)
 
     def forward(self, x, XYZ):
-        # test if every shape is divisible by 16
+        # test if every shape is divisible by 16 - shold be used if not fixed input size
         # if not, pad it
         # print(x.shape)
 
@@ -134,12 +131,10 @@ class PoseEstimationModel(nn.Module):
             return x
         except OverflowError as e:
             print(e)
+            # skip this batch if it overflows
             return None
 
     def loss_W(self, hat_W, gt_W, plot, *plotargs):
-        # normalisation, but im not sure if its helping or hurting
-        # magnitude = torch.sqrt(torch.sum(hat_W ** 2, dim=1)).view(-1, 1)
-        # hat_W = hat_W / magnitude
         if random.random() < 0.001: self.plot(hat_W, gt_W, *plotargs)
         if plot: self.plot(hat_W, gt_W, *plotargs)
 
@@ -155,6 +150,7 @@ class PoseEstimationModel(nn.Module):
         try:
             return func(*data)
         except RuntimeError as e:
+            # prevent crashing due to memory overflow
             print(e)
             raise OverflowError
 

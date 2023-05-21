@@ -25,7 +25,7 @@ class Trainer:
         self.model.train()
         total_loss_list = []
 
-        for idx, (images, targets) in enumerate(self.train_dataloader):
+        for idx, (images, targets, pointcloud) in enumerate(self.train_dataloader):
             images = [image.to(self.device) for image in images]
             targets = [{k: v.to(self.device) for k, v in t.items()} for t in targets]
 
@@ -36,7 +36,7 @@ class Trainer:
                 losses = sum(loss for loss in loss_dict.values())
 
             if idx == 0:
-                loss_dict_list = {k: [] for k in loss_dict.keys()}  # Initialize loss_dict_list here
+                loss_dict_list = {k: [] for k in loss_dict.keys()}
 
             self.scaler.scale(losses).backward()
             self.scaler.step(self.optimizer)
@@ -54,11 +54,11 @@ class Trainer:
         return total_loss_list
 
     def validate(self, epoch):
-        # self.model.eval()
+        # self.model.eval() # will produce picuters which is not what we want for now
         total_loss_list = []
 
         with torch.no_grad():
-            for idx, (images, targets) in enumerate(self.val_dataloader):
+            for idx, (images, targets, pointcloud) in enumerate(self.val_dataloader):
                 images = [image.to(self.device) for image in images]
                 targets = [{k: v.to(self.device) for k, v in t.items()} for t in targets]
 
@@ -66,7 +66,7 @@ class Trainer:
                 losses = sum(loss for loss in loss_dict.values())
 
                 if idx == 0:
-                    loss_dict_list = {k: [] for k in loss_dict.keys()}  # Initialize loss_dict_list here
+                    loss_dict_list = {k: [] for k in loss_dict.keys()}
 
                 print(f"Validation Loss: {losses.item()}, Batch: {idx}/{len(self.val_dataloader)}, Epoch: {epoch}")
                 total_loss_list.append(losses.item())
@@ -91,7 +91,8 @@ class Trainer:
             plt.legend()
             plt.title(f'Epoch {epoch}, Batch {batch_idx}/{total_batches}' + (' (Validation)' if validation else ''))
             plt.grid()
-            plt.savefig(f'losses{batch_idx}_{epoch}.png')
+            name = 'val' if validation else 'train'
+            plt.savefig(f'losses_{name}_{epoch}_{batch_idx}.png')
 
     def train(self, num_epochs, checkpoint_path=None):
         for epoch in range(num_epochs):
@@ -113,6 +114,7 @@ class Trainer:
                 }, checkpoint_path.format(epoch))
 
     def load_checkpoint(self, checkpoint_path, model):
+        # change up as needed for your checkpoint, and planed usage
         checkpoint = torch.load(checkpoint_path)
         model.load_state_dict(checkpoint['model_state_dict'])
         # optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -123,32 +125,43 @@ class Trainer:
         # val_loss_dict = checkpoint['val_loss_dict']
         return model
 
+
 def main():
     base_path = pathlib.Path(__file__).parent.absolute()
-    coco_path = base_path.joinpath('CCO_TE')
+    coco_path = base_path.joinpath('RevertDS')
     channels = [0, 1, 2, 5, 9]
 
-    train_dataloader, val_dataloader, stats = createDataLoader(coco_path, 4, channels=channels,split=0.9)
+    train_dataloader, val_dataloader, stats = createDataLoader(coco_path, 4, channels=channels, split=0.9,
+                                                               num_workers=8, shuffle=True)
     mean, std = stats
     mean, std = mean[channels], std[channels]
-
-    model = MaskRCNN(5, 5, mean, std)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=0.0001)
+    cats = train_dataloader.dataset.dataset.coco.cats
+    model = MaskRCNN(5, len(cats), mean, std)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
     scaler = GradScaler()
-    batches_per_epoch = len(train_dataloader)
-    batches_per_cycle = 200
-    num_epochs = 30
-    T_max = batches_per_epoch * num_epochs // batches_per_cycle
-    eta_min = 1e-6
-    scheduler = CosineAnnealingLR(optimizer, T_max=T_max, eta_min=eta_min)
+    lr = 6e-3
+    num_epochs = 25
+
+
+    optimizer = torch.optim.RAdam(model.parameters(), lr=lr, weight_decay=0.002, eps=1e-8)
+
+    # Use a cosine learning rate scheduler with a linear warm-up phase
+    warmup_epochs = 3
+    total_steps = len(train_dataloader) * num_epochs
+    warmup_steps = warmup_epochs * len(train_dataloader)
+
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer,
+                                                    max_lr=lr,
+                                                    total_steps=total_steps,
+                                                    pct_start=warmup_steps / total_steps,
+                                                    anneal_strategy='cos',
+                                                    final_div_factor=600)
 
     trainer = Trainer(model, train_dataloader, val_dataloader, optimizer, device, scaler, scheduler)
-    # just so it runs basically forever, you can stop it whenever you want - checkpoints are saved every epoch
-    save_path = "RCNN_Unscaled_{}.pth"
+    save_path = "RCNN_Unscaled_2cat{}.pth"
     trainer.train(num_epochs, save_path)
 
 

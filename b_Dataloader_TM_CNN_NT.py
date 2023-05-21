@@ -45,15 +45,6 @@ class CustomCocoDetection(CocoDetection):
         # R,G,B, X,Y,Z, NX,NY,NZ ,I
         image = torch.from_numpy(image).type(torch.float32)
 
-        # image_scaled = scale(image)
-        # so the image is in the range of 0 to 1 not 0.5 to 1 as it is now
-        # image_scaled[5] = (image_scaled[5] - 0.5) * 2
-        # try:
-        #     assert image_scaled[5].min() >= 0 and image_scaled[5].max() <= 1, "Image is not in the range of 0 to 1"
-        # except AssertionError as e:
-        #     print("Image min: ", image_scaled[5].min(), " max: ", image_scaled[5].max())
-        #     raise e
-
         return image
 
     def _load_target(self, id: int):
@@ -128,7 +119,7 @@ def prepare_masks(target):
         inst_masks.append(inst_mask)
         inst_labels.append(inst['id'])
 
-        # debug
+        # debug plot
         # plot inst mask and bbox
         # fig, ax = plt.subplots(1)
         # ax.imshow(inst_mask)
@@ -211,15 +202,16 @@ def prepare_targets(targets) -> list:
         # bbox = bbox.type(torch.float32)
         prepared_target['box'] = bbox
 
-        # filter out bins and background - filter out upper names containing 'bin' or 'background'
-        filt = prepared_target['labels'] > 2
-        prepared_target['masks'] = prepared_target['masks'][filt, :, :]
-        prepared_target['rot'] = prepared_target['rot'][filt, :, :]
-        prepared_target['move'] = prepared_target['move'][filt, :]
-        prepared_target['labels'] = prepared_target['labels'][filt]
-        prepared_target['names'] = prepared_target['names'][filt]
-        prepared_target['box'] = np.array(prepared_target['box'])[filt].tolist()
-        prepared_target['centroid'] = np.array(prepared_target['centroid'])[filt].tolist()
+        # filter out bins and background -
+        # filter out upper names containing 'bin' or 'background' - filtered in data preparation - ie not needed
+        #filt = prepared_target['labels'] > 2
+        prepared_target['masks'] = prepared_target['masks']#[filt, :, :]
+        prepared_target['rot'] = prepared_target['rot']#[filt, :, :]
+        prepared_target['move'] = prepared_target['move']#[filt, :]
+        prepared_target['labels'] = prepared_target['labels']#[filt]
+        prepared_target['names'] = prepared_target['names']#[filt]
+        prepared_target['box'] = np.array(prepared_target['box']).tolist()#[filt].tolist()
+        prepared_target['centroid'] = np.array(prepared_target['centroid']).tolist()#[filt].tolist()
         if len(prepared_target['labels']) == 0:
             prepared_target = None
 
@@ -241,7 +233,8 @@ def prepare_batch(batch):
 
     images = filtered_images
     targets = filtered_targets
-
+    if len(images) == 0:
+        return None, None
     # Stack images on the first dimension to get a tensor of shape (batch_size, C, H, W)
     batched_images = torch.stack(images, dim=0).permute(0, 3, 1, 2)
     del images
@@ -313,7 +306,7 @@ def collate_second_stage(images, targets):
 
 def collate_third_stage(images, targets, fixed_size, box_expantion_ratio):
     if fixed_size:
-        # VIT needs a fixed size input, so just use that as the crop size
+        # VIT needs a fixed ish size input, so just use that as the crop size
         return 224
     boxes = [target['gt_boxes'] for target in targets]
     # calculate the area of the boxes
@@ -477,7 +470,7 @@ class CollateWrapper:
 
 
 def createDataLoader(path, batchsize=1, shuffle=True, num_workers=4, channels: list = None, split=0.9, gray=False):
-    ano_path = (path.joinpath('annotations', "merged_maskrcnn_centroid.json"))
+    ano_path = (path.joinpath('annotations', "merged_maskrcnn_centroid2.json"))
     # ano_path = (path.joinpath('annotations', "merged_coco.json"))
 
     collate = CollateWrapper(channels, gray=gray)
@@ -485,8 +478,21 @@ def createDataLoader(path, batchsize=1, shuffle=True, num_workers=4, channels: l
     # Load the COCO dataset
     dataset = CustomCocoDetection(root=str(path), annFile=str(ano_path))
 
-    # subset the dataset
-    # dataset = Subset(dataset, range(0, 300))
+
+    # compute class samples
+    cattoimgs = dataset.coco.catToImgs
+    cattoimgs = {k: len(v) for k, v in cattoimgs.items()}
+    # look up the names
+    cattoimgs = {dataset.coco.cats[k]['name']: v for k, v in cattoimgs.items()}
+
+    # sort the dict
+    cattoimgs = {k: v for k, v in sorted(cattoimgs.items(), key=lambda item: item[1])}
+    # print it one by one in new line
+    for k, v in cattoimgs.items():
+        print(k, v)
+
+
+
 
     # Calculate the lengths of the train and validation sets
     train_len = int(len(dataset) * split)
@@ -502,6 +508,8 @@ def createDataLoader(path, batchsize=1, shuffle=True, num_workers=4, channels: l
                                 collate_fn=collate)
 
     return train_dataloader, val_dataloader
+
+# some comments from the old ish code , code that is not used anymore but might be useful in the future
 
 # change up the XY image to have the standard top left corner as origin
 # instead of the center of the image

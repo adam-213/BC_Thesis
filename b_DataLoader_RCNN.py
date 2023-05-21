@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 from matplotlib import patches
 
 
-# Custom loader is needed to load RGB-A images - (4 channels) which in my case are RGB-D images
+# Custom loader is needed to load custom channel  images -  which in my case are RGB-D-A images
 class CustomCocoDetection(CocoDetection):
 
     def __init__(self, root, annFile, transforms=None):
@@ -22,10 +22,7 @@ class CustomCocoDetection(CocoDetection):
 
     def _load_image(self, id: int) -> torch.Tensor:
         # overrride the _load_image method to load the images from the npz files in fp16
-        # print("Loading image: ", id, "")
         path = self.coco.loadImgs(id)[0]["file_name"]
-        # print("Path: ", path, " ")
-        # print("Path: ", path, " ")
         npz_file = np.load(os.path.join(self.root, path))
         # way to get the keys of the npz file, and load them as a list in the same order
         img_arrays = [npz_file[key] for key in npz_file.keys()]
@@ -55,7 +52,7 @@ def prepare_masks(target):
         inst_masks.append(inst_mask)
         inst_labels.append(inst['id'])
 
-        # debug
+        # debug plot
         # plot inst mask and bbox
         # fig, ax = plt.subplots(1)
         # ax.imshow(inst_mask)
@@ -105,14 +102,14 @@ def prepare_targets(targets) -> list:
         # labels need to be int64, such overkill
         prepared_target['labels'] = torch.tensor(inst_labels, dtype=torch.int64)
 
-        # Don't know if necessary
+        # Don't know if necessary - this would  had been helpful when evaluating the model on the test set
         # prepared_target['image_id'] = torch.tensor([target[0]['image_id']])
 
-        # Not defined - not needed
+        # Not defined - not needed - same here if i remebered this was here i would have saved a lot of time
         # prepared_target['iscrowd'] = torch.zeros((bbox.shape[0],), dtype=torch.int8)
 
         prepared_targets.append(prepared_target)
-
+        #   # debug plot
         # # plot the masks and bounding boxes using patches
         # fig, ax = plt.subplots(1)
         # #ax.imshow(image)
@@ -137,16 +134,16 @@ def collate_fn_rcnn(batch, channels=None):
     batched_images = torch.stack(images, dim=0).permute(0, 3, 1, 2)
     # Select channels to use
     if channels:
-        batched_images = batched_images[:, channels, :, :]
+        batched_images_cut = batched_images[:, channels, :, :]
     # For some reason this needs to be under the channel selection
-    batched_images.requires_grad_(True)  # RCNN needs gradients on input images
+    batched_images_cut.requires_grad_(True)  # RCNN needs gradients on input images
 
     # Prepare targets
     prepared_targets = prepare_targets(targets)
     # "Heuristic" was applied in the preprocess step as there was much more data to work with
 
     # Return batch as a tuple
-    return batched_images, prepared_targets
+    return batched_images_cut, prepared_targets, batched_images[:, 3:6, :, :] # pointcloud
 
 
 from torch.utils.data import DataLoader, Subset, random_split
@@ -164,7 +161,7 @@ class CollateWrapper:
 
 
 def createDataLoader(path, bs=1, shuffle=False, num_workers=0, channels: list = None, split=0.9,
-                     dataset_creation=False,anoname='merged.json'):
+                     dataset_creation=False, anoname='merged.json'):
     ano_path = (path.joinpath('annotations', anoname))
 
     collate = CollateWrapper(channels)
@@ -181,9 +178,11 @@ def createDataLoader(path, bs=1, shuffle=False, num_workers=0, channels: list = 
         val_len = len(dataset) - train_len
 
         # Create the train and validation subsets
+        # this actually shuffles the dataset not just splits it randomly
         train_set, val_set = random_split(dataset,
-                                          [train_len, val_len])  # this actually shuffles the dataset not just splits it
-        # reason unknown, thankfully I noticed it
+                                          [train_len, val_len])
+
+
 
         # cut the dataset to a smaller size for testing
         # train_set = Subset(train_set, range(20))
